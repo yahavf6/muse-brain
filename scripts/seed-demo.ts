@@ -20,6 +20,7 @@ const a1 = await log(claudeCode, {
   kind: 'action', title: 'Removed the subreddit picker from onboarding, auto-assign instead',
   why: 'The picker made users research subreddits before they saw any value; cutting it removes the longest step.',
   project: 'reddgrow', links: [{ type: 'motivated_by', to: t1 }],
+  files: ['apps/web/components/onboarding/AssignSubredditsStep.tsx'],
 });
 const c1 = await log(claudeCode, {
   kind: 'conclusion', title: 'Activation rose after the picker was removed', verdict: 'good',
@@ -47,15 +48,15 @@ const refund = await log(yahav, {
 });
 await approveIfNeeded(refund, 'Yahav');
 
-// --- brand font: approved rule superseded by a proposed one ---
+// --- brand font: approved rule superseded by a newly-approved one (supersede_on_approve) ---
 const interRule = await log(yahav, { kind: 'rule', title: 'Brand font is Inter', why: 'Original brand typography choice.' });
 await approveIfNeeded(interRule, 'Yahav');
-await log(yahav, {
+const fontsRule = await log(yahav, {
   kind: 'rule', title: 'Brand fonts are Fraunces and Plus Jakarta Sans',
   why: 'Refreshed brand type pairing replaces the single Inter font.',
   links: [{ type: 'supersedes', to: interRule }],
 });
-// left proposed on purpose -- still needs human approval
+await approveIfNeeded(fontsRule, 'Yahav');
 
 // --- codex cold-email thread: a thought that gets refuted ---
 const t2 = await log(codex, { kind: 'thought', title: 'Short subject lines get more cold email replies', why: '', project: 'reddgrow' });
@@ -81,6 +82,7 @@ await log(claudeCode, {
   kind: 'action', title: 'Refunded a customer on day 9',
   why: 'Within the 14-day refund window.',
   project: 'reddgrow', links: [{ type: 'complies_with', to: refund }],
+  files: ['apps/web/app/pricing/page.tsx'],
 });
 
 // --- stale action: >14 days old, no conclusion, so the outcome gate has something to say ---
@@ -89,6 +91,6 @@ const staleId = await log(claudeCode, {
   why: "The old provider's deliverability had degraded.",
   project: 'reddgrow',
 });
-getDb().prepare("UPDATE node SET created_at = datetime('now', '-20 days') WHERE id = ?").run(staleId);
+getDb().prepare("UPDATE node SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-20 days') WHERE id = ?").run(staleId);
 
 console.log('seed complete');

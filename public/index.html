@@ -48,7 +48,7 @@ eyebrows, nested cards, a second accent.
   --k-rule:#d55181;
   --k-conclusion:#c98500;
   --amber:#f5b342;
-  --red:#d03b3b;
+  --red:#ef6a62;
   --edge:#3a3a41;
   --edge-hot:#9a9aa3;
   --radius:6px;
@@ -103,7 +103,7 @@ button{ background:none; }
 .present-toggle{ padding:4px 9px; border:1px solid var(--hair); border-radius:var(--radius); color:var(--ink-2); cursor:pointer; font-size:12px; }
 .present-toggle[aria-pressed="true"]{ color:var(--ink-1); border-color:var(--hair-strong); background:rgba(255,255,255,.06); }
 
-.kbd-hint{ font-family:var(--mono); font-size:11px; color:var(--ink-3); border:1px solid var(--hair); border-radius:4px; padding:1px 5px; }
+.kbd-hint{ font-family:var(--mono); font-size:11px; color:var(--ink-2); border:1px solid var(--hair); border-radius:4px; padding:1px 5px; }
 
 /* main */
 .main{ flex:1; display:flex; min-height:0; }
@@ -128,7 +128,7 @@ button{ background:none; }
 .need-row{ border:1px solid var(--hair); border-radius:var(--radius); padding:8px 10px; display:flex; flex-direction:column; gap:4px; cursor:default; }
 .need-row[data-goto]{ cursor:pointer; }
 .need-row[data-goto]:hover{ border-color:var(--hair-strong); }
-.need-title{ font-size:12.5px; color:var(--ink-1); }
+.need-title{ font-size:12.5px; color:var(--ink-1); display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; }
 .need-meta{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .need-phrase{ color:var(--amber); }
 .need-days{ color:var(--ink-2); }
@@ -137,9 +137,9 @@ button{ background:none; }
 .guard-decision.deny{ color:var(--red); }
 .guard-decision.ask{ color:var(--amber); }
 .guard-decision.allow{ color:var(--ink-2); }
-.needs-empty{ color:var(--ink-3); font-size:12px; padding:4px 0; }
+.needs-empty{ color:var(--ink-2); font-size:12px; padding:4px 0; }
 
-.insp-empty{ color:var(--ink-3); font-size:12.5px; padding-top:4px; }
+.insp-empty{ color:var(--ink-2); font-size:12.5px; padding-top:4px; }
 .insp-head{ display:flex; align-items:center; gap:8px; }
 .insp-kind{ font-size:12px; color:var(--ink-2); }
 .insp-id{ font-size:12px; color:var(--ink-3); }
@@ -148,7 +148,7 @@ button{ background:none; }
 .insp-fields{ margin:10px 0 0; display:grid; grid-template-columns:76px minmax(0,1fr); gap:6px 10px; font-size:12px; }
 .insp-fields dt{ color:var(--ink-3); margin:0; }
 .insp-fields dd{ margin:0; color:var(--ink-2); overflow-wrap:anywhere; }
-.insp-sub{ margin:14px 0 6px; font-size:11px; font-weight:600; color:var(--ink-3); text-transform:uppercase; letter-spacing:.04em; }
+.insp-sub{ margin:14px 0 6px; font-size:11px; font-weight:600; color:var(--ink-2); text-transform:uppercase; letter-spacing:.04em; }
 .conn-list{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:4px; }
 .conn-row{ width:100%; text-align:left; border:1px solid var(--hair); border-radius:4px; padding:6px 8px; cursor:pointer; color:var(--ink-1); font-size:12px; display:flex; flex-direction:column; gap:1px; }
 .conn-row:hover{ border-color:var(--hair-strong); background:rgba(255,255,255,.03); }
@@ -174,7 +174,7 @@ body.present .activity-strip{ display:none; }
 .palette-row[aria-selected="true"]{ background:rgba(255,255,255,.05); }
 .palette-row .p-title{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink-1); font-size:12.5px; }
 .palette-row .p-score{ color:var(--ink-3); font-size:11px; }
-.palette-empty{ padding:14px; color:var(--ink-3); font-size:12.5px; }
+.palette-empty{ padding:14px; color:var(--ink-2); font-size:12.5px; }
 
 /* table view */
 .table-overlay{ position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; z-index:50; padding:40px; }
@@ -264,8 +264,19 @@ function $$(s,root){ return Array.prototype.slice.call((root||document).querySel
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
 function cap(s){ return s ? s.charAt(0).toUpperCase()+s.slice(1) : ''; }
 
+/* Timestamps the server writes are always ISO-8601 with a Z suffix, but be defensive:
+   normalize any zone-less string (no trailing Z or +-HH:MM) to UTC before Date.parse,
+   everywhere a timestamp string is parsed (live indicator, activity strip, needs rows,
+   inspector's time-derived fields, and the graph's time-x force). */
+function parseTs(s){
+  if(typeof s === 'number') return s;
+  if(!s) return NaN;
+  var hasZone = /Z$|[+-]\d{2}:?\d{2}$/.test(s);
+  return Date.parse(hasZone ? s : s+'Z');
+}
+
 function relTime(input){
-  var t = typeof input === 'number' ? input : Date.parse(input);
+  var t = typeof input === 'number' ? input : parseTs(input);
   if(!t) return '';
   var s = Math.max(0, Math.round((Date.now()-t)/1000));
   if(s<60) return s+'s';
@@ -326,7 +337,8 @@ var activityLines = [];
 function isFaded(n){ return !!n.valid_to || n.status==='refuted' || n.status==='retired'; }
 function isHollow(n){ return n.status==='open' || n.status==='proposed'; }
 function isDashedProposed(n){ return n.kind==='rule' && n.status==='proposed'; }
-function baseRadius(n){ var r = 5.5 + Math.min(n.deg||0,6)*0.85; return state.present ? r*1.4 : r; }
+function baseRadius(n){ var r = 7 + Math.min(n.deg||0,6)*0.85; return state.present ? r*1.5 : r; }
+function easeOutCubic(p){ return 1 - Math.pow(1-p, 3); }
 function shapePath(ctx, kind, x, y, r){
   ctx.beginPath();
   if(kind==='thought'){ ctx.arc(x,y,r,0,2*Math.PI); }
@@ -346,9 +358,9 @@ function drawNode(n, ctx, scale){
   if(state.trace && !inChain(n.id)) alpha *= 0.18;
   var drawR = r, ringAlpha = 0;
   var at = arrivals.get(n.id);
-  if(at != null){ var p = Math.min(1,(performance.now()-at)/240); drawR = r*(0.35+0.65*p); ringAlpha = Math.max(ringAlpha,1-p); if(p>=1) arrivals.delete(n.id); }
+  if(at != null){ var p = Math.min(1,(performance.now()-at)/240); var pe = easeOutCubic(p); drawR = r*(0.35+0.65*pe); ringAlpha = Math.max(ringAlpha,1-pe); if(p>=1) arrivals.delete(n.id); }
   var ft = flips.get(n.id);
-  if(ft != null){ var p2 = Math.min(1,(performance.now()-ft)/240); ringAlpha = Math.max(ringAlpha,1-p2); if(p2>=1) flips.delete(n.id); }
+  if(ft != null){ var p2 = Math.min(1,(performance.now()-ft)/240); var p2e = easeOutCubic(p2); ringAlpha = Math.max(ringAlpha,1-p2e); if(p2>=1) flips.delete(n.id); }
   ctx.save();
   ctx.globalAlpha = alpha;
   shapePath(ctx, n.kind, n.x, n.y, drawR);
@@ -378,14 +390,14 @@ function drawNode(n, ctx, scale){
     shapePath(ctx, n.kind, n.x, n.y, r+3.4);
     ctx.lineWidth = 1.4; ctx.strokeStyle = T.ink1; ctx.stroke();
   }
-  var labelScale = state.present ? 1.3 : 2.2;
-  var showId = scale > labelScale || n.id===state.hoverId || n.id===state.previewId || (state.trace && state.trace.rootId===n.id);
-  if(showId){
-    var fs = Math.max(9/scale, state.present ? 4 : 2.6);
-    ctx.font = fs+'px '+MONO; ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillStyle=T.ink3;
-    ctx.fillText('#'+n.id, n.x, n.y+r*1.35+1.5);
-  }
-  if(n.id===state.hoverId || n.id===state.previewId || (state.trace && state.trace.rootId===n.id)){
+  /* #id: always on at rest, constant ~10px apparent size regardless of zoom, muted ink */
+  var idFs = (state.present ? 12 : 10) / scale;
+  ctx.font = idFs+'px '+MONO; ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillStyle=T.ink3;
+  ctx.fillText('#'+n.id, n.x, n.y+r*1.35+1.5);
+
+  /* title: only when hot (hover/selected/traced) or zoomed in past 1.6x; always in Present */
+  var hot = n.id===state.hoverId || n.id===state.previewId || inChain(n.id);
+  if(state.present || hot || scale > 1.6){
     var t = n.title.length>44 ? n.title.slice(0,43)+'…' : n.title;
     var tf = Math.max(11/scale, 3.2);
     ctx.font = '500 '+tf+'px '+MONO;
@@ -412,7 +424,7 @@ function linkVisible(l){ var s=gNodes.get(endId(l.source)), t=gNodes.get(endId(l
 var timeRange = { min:0, max:1 };
 function updateTimeRange(){
   var min=Infinity, max=-Infinity;
-  gNodes.forEach(function(n){ var t=Date.parse(n.created_at)||0; if(t<min) min=t; if(t>max) max=t; });
+  gNodes.forEach(function(n){ var t=parseTs(n.created_at)||0; if(t<min) min=t; if(t>max) max=t; });
   if(isFinite(min) && min<max) timeRange={min:min,max:max}; else if(isFinite(min)) timeRange={min:min-1,max:min+1};
 }
 function timeXForce(alpha){
@@ -421,13 +433,24 @@ function timeXForce(alpha){
   var span = (timeRange.max-timeRange.min) || 1;
   gNodes.forEach(function(n){
     if(n.x==null) return;
-    var t = Date.parse(n.created_at) || timeRange.min;
+    var t = parseTs(n.created_at) || timeRange.min;
     var frac = (t-timeRange.min)/span;
     var targetX = -w/2+pad + frac*(w-pad*2);
     n.vx = (n.vx||0) + (targetX-n.x) * 0.006 * alpha;
   });
 }
 timeXForce.initialize = function(){};
+
+/* weak pull toward the canvas center (0,0 in force-graph's coordinate space) so sparse,
+   disconnected clusters stay compact instead of drifting apart under charge repulsion */
+function centerPullForce(alpha){
+  gNodes.forEach(function(n){
+    if(n.x==null || n.y==null) return;
+    n.vx = (n.vx||0) + (0-n.x) * 0.02 * alpha;
+    n.vy = (n.vy||0) + (0-n.y) * 0.02 * alpha;
+  });
+}
+centerPullForce.initialize = function(){};
 
 function computeDegrees(){
   var deg = new Map();
@@ -528,10 +551,11 @@ function initGraph(){
     .onNodeClick(function(n){ traceNode(n.id); })
     .onNodeHover(function(n){ state.hoverId = n ? n.id : null; host.style.cursor = n ? 'pointer' : ''; if(Graph) Graph.refresh(); })
     .onBackgroundClick(function(){ clearTrace(); })
-    .onEngineStop(function(){ Graph.zoomToFit(state.reduceMotion?0:400, 60); });
+    .onEngineStop(function(){ Graph.zoomToFit(state.reduceMotion?0:400, 48); });
   Graph.d3Force('x', timeXForce);
-  Graph.d3Force('charge').strength(-160).distanceMax(280);
-  Graph.d3Force('link').distance(60);
+  Graph.d3Force('centerPull', centerPullForce);
+  Graph.d3Force('charge').strength(-160).distanceMax(150);
+  Graph.d3Force('link').distance(70);
   function size(){ var b=host.getBoundingClientRect(); if(b.width>0) Graph.width(b.width).height(b.height); }
   size();
   if(window.ResizeObserver) new ResizeObserver(size).observe(host); else window.addEventListener('resize', size);
@@ -629,14 +653,14 @@ function renderNeeds(data){
   if(!count){ body.innerHTML = '<p class="needs-empty">Nothing needs you</p>'; return; }
   var parts = [];
   proposed.forEach(function(n){
-    parts.push('<div class="need-row" data-goto="'+n.id+'"><div class="need-title">'+esc(n.title)+'</div><div class="need-meta"><span class="need-phrase mono">approve rule '+n.id+'</span><button type="button" class="copy-btn" data-copy="approve rule '+n.id+'">Copy</button></div></div>');
+    parts.push('<div class="need-row" data-goto="'+n.id+'"><div class="need-title" title="'+esc(n.title)+'">'+esc(n.title)+'</div><div class="need-meta"><span class="need-phrase mono">approve rule '+n.id+'</span><button type="button" class="copy-btn" data-copy="approve rule '+n.id+'">Copy</button></div></div>');
   });
   stale.forEach(function(n){
-    parts.push('<div class="need-row" data-goto="'+n.id+'"><div class="need-title">'+esc(n.title)+'</div><div class="need-meta"><span class="need-days mono">'+n.days+'d without an outcome</span></div></div>');
+    parts.push('<div class="need-row" data-goto="'+n.id+'"><div class="need-title" title="'+esc(n.title)+'">'+esc(n.title)+'</div><div class="need-meta"><span class="need-days mono">'+n.days+'d without an outcome</span></div></div>');
   });
   guards.forEach(function(g){
     var cls = g.decision==='deny' ? 'deny' : (g.decision==='ask' || (g.decision||'').indexOf('would')===0) ? 'ask' : 'allow';
-    parts.push('<div class="need-row"><div class="need-title">'+esc(g.title)+'</div><div class="need-meta"><span class="guard-decision mono '+cls+'">'+esc(g.decision)+'</span><span class="need-days mono">'+relTime(g.ts)+'</span></div></div>');
+    parts.push('<div class="need-row"><div class="need-title" title="'+esc(g.title)+'">'+esc(g.title)+'</div><div class="need-meta"><span class="guard-decision mono '+cls+'">'+esc(g.decision)+'</span><span class="need-days mono">'+relTime(g.ts)+'</span></div></div>');
   });
   body.innerHTML = parts.join('');
 }
@@ -701,7 +725,7 @@ function updateLiveText(){
   var txt = $('#liveText');
   if(!state.connected){ txt.textContent = 'reconnecting'; return; }
   var n = state.agents ? state.agents.length : 0;
-  var lw = lastWriteMs ? relTime(lastWriteMs)+' ago' : '—';
+  var lw = lastWriteMs ? relTime(lastWriteMs)+' ago' : 'no writes yet';
   txt.textContent = n + (n===1?' agent':' agents') + ' · last write ' + lw;
 }
 setInterval(function(){ if(state.connected) updateLiveText(); }, 1000);
@@ -726,7 +750,7 @@ async function pollVersion(){
   state.agents = data.agents || [];
   state.jevOn = data.jev === 'on';
   var maxT = 0;
-  state.agents.forEach(function(a){ var t=Date.parse(a.last_write)||0; if(t>maxT) maxT=t; });
+  state.agents.forEach(function(a){ var t=parseTs(a.last_write)||0; if(t>maxT) maxT=t; });
   if(maxT) lastWriteMs = maxT;
   updateLiveText();
   if(state.version===null){
@@ -742,11 +766,12 @@ async function pollVersion(){
 }
 
 /* ---------- command palette ---------- */
-function openPalette(){
+function openPalette(prefill){
   state.paletteOpen = true;
   $('#paletteOverlay').classList.remove('hidden');
   var input = $('#paletteInput');
-  input.value = ''; input.focus();
+  input.value = prefill || ''; input.focus();
+  if(prefill) input.setSelectionRange(prefill.length, prefill.length);
   state.paletteHasResults = false; state.paletteRows = []; state.paletteIndex = -1;
   $('#paletteList').innerHTML = '';
   $('#paletteNote').classList.add('hidden');
@@ -813,7 +838,7 @@ function openTable(){
   var rows = Array.from(gNodes.values()).sort(function(a,b){ return a.id-b.id; });
   var body = rows.map(function(n){
     var st = n.kind==='conclusion' ? n.verdict : n.status;
-    return '<tr><td class="mono">#'+n.id+'</td><td>'+cap(n.kind)+'</td><td class="title-cell">'+esc(n.title)+'</td><td>'+esc(st||'')+'</td><td>'+esc(n.project||'—')+'</td><td class="mono">'+esc(n.agent||'')+'</td><td class="mono tabular">'+esc((n.created_at||'').slice(0,10))+'</td></tr>';
+    return '<tr><td class="mono">#'+n.id+'</td><td>'+cap(n.kind)+'</td><td class="title-cell">'+esc(n.title)+'</td><td>'+esc(st||'')+'</td><td>'+esc(n.project||'none')+'</td><td class="mono">'+esc(n.agent||'')+'</td><td class="mono tabular">'+esc((n.created_at||'').slice(0,10))+'</td></tr>';
   }).join('');
   $('#nodeTable').innerHTML = '<thead><tr><th>Id</th><th>Kind</th><th>Title</th><th>State</th><th>Project</th><th>Agent</th><th>Created</th></tr></thead><tbody>'+body+'</tbody>';
   $('#tableClose').focus();
@@ -831,6 +856,7 @@ window.addEventListener('keydown', function(ev){
   if(meta && ev.shiftKey && (ev.key==='t' || ev.key==='T')){ ev.preventDefault(); openTable(); return; }
   if(meta && (ev.key==='k' || ev.key==='K')){ ev.preventDefault(); openPalette(); return; }
   if(ev.key==='/' && !isEditable(document.activeElement)){ ev.preventDefault(); openPalette(); return; }
+  if(ev.key==='#' && !isEditable(document.activeElement)){ ev.preventDefault(); openPalette('#'); return; }
   if(ev.key==='Escape'){ if(state.trace) clearTrace(); return; }
   if(!isEditable(document.activeElement)){
     if(ev.key==='ArrowRight' && state.trace){ ev.preventDefault(); walkChain('out'); }

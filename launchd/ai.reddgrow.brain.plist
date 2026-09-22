@@ -7,6 +7,7 @@
 	<key>ProgramArguments</key>
 	<array>
 		<string>/Users/yahavfuchs/.nvm/versions/node/v24.11.1/bin/node</string>
+		<string>--no-warnings=ExperimentalWarning</string>
 		<string>/Users/yahavfuchs/WebstormProjects/muse-brain/src/server.ts</string>
 	</array>
 	<key>WorkingDirectory</key>
@@ -23,6 +24,8 @@
 	<dict>
 		<key>PATH</key>
 		<string>/Users/yahavfuchs/.nvm/versions/node/v24.11.1/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>HOME</key>
+		<string>/Users/yahavfuchs</string>
 	</dict>
 </dict>
 </plist>

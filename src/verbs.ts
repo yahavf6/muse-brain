@@ -17,12 +17,26 @@ export type Edge = { src: number; dst: number; type: string; created_at: string 
 export type Hit = Pick<Node, 'id' | 'kind' | 'title' | 'status' | 'verdict' | 'project' | 'created_at'> & { score?: number };
 
 let db: DatabaseSync = openDb();
-export function setDb(newDb: DatabaseSync): void { db = newDb; }
+let lastDataVersion: number | null = null;
+export function setDb(newDb: DatabaseSync): void { db = newDb; lastDataVersion = null; }
 export function getDb(): DatabaseSync { return db; }
 
 let VERSION = 0;
 export function bumpVersion(): number { return ++VERSION; }
 export function getVersion(): number { return VERSION; }
+
+// Detects writes committed by OTHER connections/processes to the same db file: this
+// connection's own commits never move its own view of PRAGMA data_version, only a
+// different connection's commit does. Own writes still bump VERSION directly via
+// bumpVersion() at commit time; this only catches the cross-process case.
+export function syncVersionFromDb(): void {
+  const row = db.prepare('PRAGMA data_version').get() as { data_version: number };
+  if (lastDataVersion === null) { lastDataVersion = row.data_version; return; }
+  if (row.data_version !== lastDataVersion) {
+    lastDataVersion = row.data_version;
+    bumpVersion();
+  }
+}
 
 export function whoIs(req: { url?: string }): Who {
   try {
@@ -62,6 +76,8 @@ const SQLITE_MESSAGE_MAP: [RegExp, string][] = [
   [/complies_with needs an approved rule/, 'complies_with needs an approved rule'],
   [/a new rule must start proposed/, 'a new rule must start proposed'],
   [/approved rule needs approved_by/, 'approved rule needs approved_by'],
+  [/rule is not a proposed, current rule/, 'rule is not a proposed, current rule'],
+  [/supersedes needs an approved, current rule/, 'supersedes needs an approved, current rule'],
   [/guard_frozen/, "an approved rule's guard cannot change; propose a new rule that supersedes it"],
   [/UNIQUE constraint failed: node\.hash/, 'duplicate content'],
   [/UNIQUE constraint failed: edge/, 'that link already exists'],
@@ -319,8 +335,8 @@ async function ask(args: z.infer<typeof askInput>, who: Who) {
 function search(args: z.infer<typeof searchInput>, who: Who) {
   const showAll = args.status === 'retired' || args.status === 'refuted' ? 1 : 0;
   let rows: any[];
-  if (args.query && args.query.trim()) {
-    const ftsQ = buildFtsQuery(args.query);
+  const ftsQ = args.query && args.query.trim() ? buildFtsQuery(args.query) : '';
+  if (ftsQ) {
     rows = db
       .prepare(
         `SELECT n.* FROM node_fts JOIN node n ON n.id = node_fts.rowid
@@ -385,11 +401,11 @@ async function log(args: z.infer<typeof logInput>, who: Who) {
   if (status === null && args.kind === 'thought') status = 'open';
   if (status === null && args.kind === 'rule') status = 'proposed';
 
-  db.exec('BEGIN IMMEDIATE');
   let id: number;
   let created: boolean;
   let linkCount = 0;
   try {
+    db.exec('BEGIN IMMEDIATE');
     const existing = db.prepare('SELECT id FROM node WHERE hash = ?').get(hash) as { id: number } | undefined;
     if (existing) {
       db.exec('COMMIT');
@@ -445,6 +461,7 @@ function link(args: z.infer<typeof linkInput>, who: Who) {
 function update(args: z.infer<typeof updateInput>, who: Who) {
   const existing = db.prepare('SELECT * FROM node WHERE id = ?').get(args.id) as any;
   if (!existing) throw new Error(`#${args.id} not found`);
+  if (existing.valid_to !== null) throw new Error(`#${args.id} is retired/superseded and cannot change`);
   if (existing.kind === 'rule' && args.status !== undefined) {
     throw new Error('rule status can only change via approve_rule or supersedes; update() refuses it');
   }
@@ -463,13 +480,15 @@ function update(args: z.infer<typeof updateInput>, who: Who) {
 
   let changes: number;
   try {
-    const info = db.prepare(`UPDATE node SET ${sets.join(', ')} WHERE id = :id AND rev = :rev`).run(params);
+    const info = db.prepare(`UPDATE node SET ${sets.join(', ')} WHERE id = :id AND rev = :rev AND valid_to IS NULL`).run(params);
     changes = Number(info.changes);
   } catch (e) {
     throw cleanSqliteError(e);
   }
   if (changes === 0) {
-    throw new Error(`conflict: #${args.id} is at rev ${existing.rev}, you sent rev ${args.rev}. Read it again first`);
+    const now = db.prepare('SELECT rev, valid_to FROM node WHERE id = ?').get(args.id) as { rev: number; valid_to: string | null };
+    if (now.valid_to !== null) throw new Error(`#${args.id} is retired/superseded and cannot change`);
+    throw new Error(`conflict: #${args.id} is at rev ${now.rev}, you sent rev ${args.rev}. Read it again first`);
   }
   bumpVersion();
   const rev = (db.prepare('SELECT rev FROM node WHERE id = ?').get(args.id) as { rev: number }).rev;
@@ -482,8 +501,8 @@ function approveRule(args: z.infer<typeof approveRuleInput>, who: Who) {
   if (existing.kind !== 'rule') throw new Error(`#${args.id} is not a rule`);
   if (existing.status !== 'proposed' || existing.valid_to !== null) throw new Error(`#${args.id} is not a proposed, current rule`);
   try {
-    db.prepare(`UPDATE node SET status = 'approved', approved_by = :by, approved_on = date('now'), rev = rev + 1 WHERE id = :id`)
-      .run({ by: args.approved_by, id: args.id });
+    db.prepare(`UPDATE node SET status = 'approved', approved_by = :by, approved_on = :on, rev = rev + 1 WHERE id = :id`)
+      .run({ by: args.approved_by, on: new Date().toISOString(), id: args.id });
   } catch (e) {
     throw cleanSqliteError(e);
   }

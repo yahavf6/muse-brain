@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS node (
   agent TEXT NOT NULL,
   rev INTEGER NOT NULL DEFAULT 1,
   hash TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   valid_to TEXT,
   CHECK (kind NOT IN ('action','rule') OR length(why) > 0),
   CHECK ((kind = 'conclusion') = (verdict IS NOT NULL)),
@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS node (
 
 CREATE TABLE IF NOT EXISTS edge (
   src INTEGER NOT NULL REFERENCES node(id), dst INTEGER NOT NULL REFERENCES node(id),
-  type TEXT NOT NULL, agent TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  type TEXT NOT NULL, agent TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   PRIMARY KEY (src, type, dst)
 ) STRICT;
 CREATE INDEX IF NOT EXISTS edge_rev ON edge(dst, type, src);
@@ -92,11 +92,28 @@ END;
 CREATE TRIGGER IF NOT EXISTS rule_approve_guard BEFORE UPDATE ON node WHEN NEW.kind = 'rule' AND NEW.status = 'approved' BEGIN
   SELECT RAISE(ABORT, 'approved rule needs approved_by')
   WHERE NEW.approved_by IS NULL OR trim(NEW.approved_by) = '';
+  SELECT RAISE(ABORT, 'rule is not a proposed, current rule')
+  WHERE NOT (OLD.status = 'proposed' AND OLD.valid_to IS NULL);
 END;
 
+CREATE TRIGGER IF NOT EXISTS supersedes_needs_live_dst BEFORE INSERT ON edge WHEN NEW.type = 'supersedes' BEGIN
+  SELECT RAISE(ABORT, 'supersedes needs an approved, current rule')
+  WHERE NOT EXISTS (
+    SELECT 1 FROM node WHERE id = NEW.dst AND kind = 'rule' AND status = 'approved' AND valid_to IS NULL
+  );
+END;
+
+-- supersede_closes only retires dst once the src rule is itself approved (or src isn't a rule);
+-- a freshly-proposed superseding rule does not retire anything until supersede_on_approve fires.
 CREATE TRIGGER IF NOT EXISTS supersede_closes AFTER INSERT ON edge WHEN NEW.type = 'supersedes' BEGIN
-  UPDATE node SET valid_to = datetime('now'), status = 'retired'
-  WHERE id = NEW.dst AND valid_to IS NULL;
+  UPDATE node SET valid_to = strftime('%Y-%m-%dT%H:%M:%fZ','now'), status = 'retired'
+  WHERE id = NEW.dst AND valid_to IS NULL
+    AND EXISTS (SELECT 1 FROM node s WHERE s.id = NEW.src AND (s.kind <> 'rule' OR s.status = 'approved'));
+END;
+
+CREATE TRIGGER IF NOT EXISTS supersede_on_approve AFTER UPDATE OF status ON node WHEN NEW.kind = 'rule' AND NEW.status = 'approved' BEGIN
+  UPDATE node SET valid_to = strftime('%Y-%m-%dT%H:%M:%fZ','now'), status = 'retired'
+  WHERE valid_to IS NULL AND id IN (SELECT dst FROM edge WHERE src = NEW.id AND type = 'supersedes');
 END;
 
 CREATE TRIGGER IF NOT EXISTS conclusion_resolves AFTER INSERT ON edge WHEN NEW.type IN ('supports', 'refutes') BEGIN

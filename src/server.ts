@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/server';
 import { NodeStreamableHTTPServerTransport, localhostHostValidation, localhostOriginValidation } from '@modelcontextprotocol/node';
-import { VERBS, callVerb, whoIs, getDb, getVersion, contextNodesEdges, rowToNode, buildFtsQuery } from './verbs.ts';
+import { VERBS, callVerb, whoIs, getDb, getVersion, syncVersionFromDb, contextNodesEdges, rowToNode, buildFtsQuery } from './verbs.ts';
 import type { Who } from './verbs.ts';
 import { judge, jevEnabled } from './judge.ts';
 import type { Question } from './judge.ts';
@@ -18,7 +18,7 @@ try {
 } catch { /* no env file, Jev stays off */ }
 
 const PORT = Number(process.env.BRAIN_PORT ?? 4747);
-const LOG_DIR = join(homedir(), '.brain', 'logs');
+const LOG_DIR = process.env.BRAIN_LOG_DIR ?? join(homedir(), '.brain', 'logs');
 mkdirSync(LOG_DIR, { recursive: true });
 const SERVER_LOG = join(LOG_DIR, 'server.log');
 const GUARD_LOG = join(LOG_DIR, 'guard.log');
@@ -31,16 +31,46 @@ function guardLog(line: Record<string, unknown>): void {
   try { appendFileSync(GUARD_LOG, `${JSON.stringify(line)}\n`); } catch { /* best effort */ }
 }
 
-async function readJsonBody(req: IncomingMessage): Promise<any> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
-  const text = Buffer.concat(chunks).toString('utf8');
-  return text ? JSON.parse(text) : {};
+const MAX_BODY_BYTES = 1024 * 1024;
+class PayloadTooLargeError extends Error {}
+
+// Event-based (not for-await): draining the request fully on an oversized body, rather than
+// destroying the stream mid-read, avoids a client-visible connection reset / TCP retransmit
+// stall on a large upload -- it just ignores bytes past the cap instead of aborting the socket.
+function readJsonBody(req: IncomingMessage): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let tooLarge = false;
+    req.on('data', (chunk: Buffer) => {
+      if (tooLarge) return;
+      total += chunk.length;
+      if (total > MAX_BODY_BYTES) { tooLarge = true; chunks.length = 0; return; }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (tooLarge) return reject(new PayloadTooLargeError('body too large'));
+      const text = Buffer.concat(chunks).toString('utf8');
+      try { resolve(text ? JSON.parse(text) : {}); } catch (e) { reject(e); }
+    });
+    req.on('error', reject);
+  });
 }
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const text = JSON.stringify(body);
   res.writeHead(status, { 'content-type': 'application/json' });
   res.end(text);
+}
+// Reads + parses a POST body, responding directly and returning undefined on failure
+// (413 over the cap, 400 on malformed JSON) so callers can bail with `if (body === undefined) return;`.
+async function parseBody(req: IncomingMessage, res: ServerResponse): Promise<any> {
+  try {
+    return await readJsonBody(req);
+  } catch (e) {
+    if (e instanceof PayloadTooLargeError) { sendJson(res, 413, { error: 'body too large' }); return undefined; }
+    sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    return undefined;
+  }
 }
 
 // ---- MCP ----
@@ -76,6 +106,7 @@ async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<voi
 // ---- /api/version, /api/graph, /api/needs ----
 
 export function apiVersion() {
+  syncVersionFromDb();
   const db = getDb();
   const nodes = (db.prepare('SELECT COUNT(*) AS c FROM node').get() as { c: number }).c;
   const agents = db.prepare('SELECT agent, MAX(created_at) AS last_write FROM node GROUP BY agent').all();
@@ -209,7 +240,19 @@ export async function apiRecall(body: { prompt: string; project?: string }) {
 const seenBySession = new Map<string, Set<number>>();
 const ADVICE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
-export async function apiPre(body: { tool_name: string; tool_input?: any; project?: string; session_id: string }) {
+// Repo-relative-ize an advice file_path: strip repo_root when the path is under it,
+// else fall back to the segment after the last /<project>/ when project is known.
+function repoRelativePath(fp: string, repoRoot: string | undefined, project: string | undefined): string {
+  if (repoRoot && fp.startsWith(`${repoRoot}/`)) return fp.slice(repoRoot.length + 1);
+  if (fp.startsWith('/') && project) {
+    const marker = `/${project}/`;
+    const idx = fp.lastIndexOf(marker);
+    if (idx !== -1) return fp.slice(idx + marker.length);
+  }
+  return fp;
+}
+
+export async function apiPre(body: { tool_name: string; tool_input?: any; project?: string; repo_root?: string; session_id: string }) {
   const db = getDb();
   let decision: 'allow' | 'deny' | 'ask' = 'allow';
   let reason: string | undefined;
@@ -255,10 +298,13 @@ export async function apiPre(body: { tool_name: string; tool_input?: any; projec
 
   let context: string | undefined;
   if (ADVICE_TOOLS.has(body.tool_name) && body.tool_input?.file_path) {
-    const fp = String(body.tool_input.file_path);
+    const rel = repoRelativePath(String(body.tool_input.file_path), body.repo_root, body.project);
     const rows = db
-      .prepare(`SELECT DISTINCT nf.node_id AS id, n.title FROM node_file nf JOIN node n ON n.id = nf.node_id WHERE :fp LIKE '%' || nf.path`)
-      .all({ fp }) as { id: number; title: string }[];
+      .prepare(
+        `SELECT DISTINCT nf.node_id AS id, n.title FROM node_file nf JOIN node n ON n.id = nf.node_id
+         WHERE nf.path = :rel AND (nf.project = :project OR nf.project IS NULL)`,
+      )
+      .all({ rel, project: body.project ?? null }) as { id: number; title: string }[];
     const seen = seenBySession.get(body.session_id) ?? new Set<number>();
     const fresh = rows.filter((r) => !seen.has(r.id)).slice(0, 2);
     fresh.forEach((r) => seen.add(r.id));
@@ -300,7 +346,8 @@ export const httpServer = createServer(async (req, res) => {
     if (method === 'GET' && url.pathname === '/api/graph') return sendJson(res, 200, apiGraph(url.searchParams));
     if (method === 'GET' && url.pathname === '/api/needs') return sendJson(res, 200, apiNeeds(url.searchParams));
     if (method === 'POST' && url.pathname === '/api/call') {
-      const body = await readJsonBody(req);
+      const body = await parseBody(req, res);
+      if (body === undefined) return;
       try {
         return sendJson(res, 200, await apiCall(body));
       } catch (e) {
@@ -308,11 +355,13 @@ export const httpServer = createServer(async (req, res) => {
       }
     }
     if (method === 'POST' && url.pathname === '/api/recall') {
-      const body = await readJsonBody(req);
+      const body = await parseBody(req, res);
+      if (body === undefined) return;
       return sendJson(res, 200, await apiRecall(body));
     }
     if (method === 'POST' && url.pathname === '/api/pre') {
-      const body = await readJsonBody(req);
+      const body = await parseBody(req, res);
+      if (body === undefined) return;
       return sendJson(res, 200, await apiPre(body));
     }
     res.writeHead(404, { 'content-type': 'application/json' });

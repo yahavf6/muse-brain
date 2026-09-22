@@ -1,9 +1,11 @@
+import { TEST_LOG_DIR } from './env.ts';
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
-import { tmpdir, homedir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import http from 'node:http';
+import { DatabaseSync } from 'node:sqlite';
 import { openDb } from '../src/db.ts';
 import { setDb, getDb, callVerb } from '../src/verbs.ts';
 import type { Who } from '../src/verbs.ts';
@@ -11,7 +13,7 @@ import { judge } from '../src/judge.ts';
 import { apiPre, apiVersion, httpServer } from '../src/server.ts';
 
 const who: Who = { agent: 'test', scope: 'full' };
-const GUARD_LOG = join(homedir(), '.brain', 'logs', 'guard.log');
+const GUARD_LOG = join(TEST_LOG_DIR, 'guard.log');
 
 let tmpDir: string;
 beforeEach(() => {
@@ -90,6 +92,21 @@ test('stale rev conflict', async () => {
   );
 });
 
+test('update() refuses a retired/superseded node with a readable error', async () => {
+  const t = (await callVerb('log', { kind: 'thought', title: 'Retire me directly', why: '' }, who)) as any;
+  getDb().prepare("UPDATE node SET valid_to = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(t.id);
+  await assert.rejects(
+    () => callVerb('update', { id: t.id, rev: 1, title: 'nope' }, who),
+    /retired\/superseded/,
+  );
+});
+
+test('search() with a query that yields zero FTS tokens falls back to a plain filter, not an FTS error', async () => {
+  await callVerb('log', { kind: 'action', title: 'Some action for the fallback test', why: 'x' }, who);
+  const res = (await callVerb('search', { query: '???' }, who)) as any;
+  assert.ok(Array.isArray(res.hits));
+});
+
 test('same content twice returns the same id, created:false', async () => {
   const first = (await callVerb('log', { kind: 'thought', title: 'Dup thought', why: 'same' }, who)) as any;
   const second = (await callVerb('log', { kind: 'thought', title: 'Dup thought', why: 'same' }, who)) as any;
@@ -97,13 +114,40 @@ test('same content twice returns the same id, created:false', async () => {
   assert.equal(second.created, false);
 });
 
-test('supersedes closes the old rule (valid_to set, status retired)', async () => {
+test('supersedes closes the old rule once the new rule is approved (valid_to set, status retired)', async () => {
   const r1 = (await callVerb('log', { kind: 'rule', title: 'Old rule', why: 'x' }, who)) as any;
   await callVerb('approve_rule', { id: r1.id, approved_by: 'Yahav' }, who);
-  await callVerb('log', { kind: 'rule', title: 'New rule', why: 'y', links: [{ type: 'supersedes', to: r1.id }] }, who);
+  const r2 = (await callVerb('log', { kind: 'rule', title: 'New rule', why: 'y', links: [{ type: 'supersedes', to: r1.id }] }, who)) as any;
+  await callVerb('approve_rule', { id: r2.id, approved_by: 'Yahav' }, who);
   const g = (await callVerb('get', { ids: [r1.id] }, who)) as any;
   assert.equal(g.nodes[0].status, 'retired');
   assert.notEqual(g.nodes[0].valid_to, null);
+});
+
+test('a proposed (not yet approved) superseding rule does not retire its target', async () => {
+  const r1 = (await callVerb('log', { kind: 'rule', title: 'Old rule, target stays live', why: 'x' }, who)) as any;
+  await callVerb('approve_rule', { id: r1.id, approved_by: 'Yahav' }, who);
+  await callVerb('log', { kind: 'rule', title: 'New rule, not yet approved', why: 'y', links: [{ type: 'supersedes', to: r1.id }] }, who);
+  const g = (await callVerb('get', { ids: [r1.id] }, who)) as any;
+  assert.equal(g.nodes[0].status, 'approved');
+  assert.equal(g.nodes[0].valid_to, null);
+});
+
+test('supersedes to a proposed (non-approved) rule is rejected', async () => {
+  const proposed = (await callVerb('log', { kind: 'rule', title: 'Still-proposed target rule', why: 'x' }, who)) as any;
+  await assert.rejects(
+    () => callVerb('log', { kind: 'rule', title: 'Tries to supersede a proposed rule', why: 'y', links: [{ type: 'supersedes', to: proposed.id }] }, who),
+    /supersedes needs an approved, current rule/,
+  );
+});
+
+test('rule_approve_guard (DB level): approving a non-proposed rule is rejected', async () => {
+  const r = (await callVerb('log', { kind: 'rule', title: 'Already-approved rule for guard test', why: 'x' }, who)) as any;
+  await callVerb('approve_rule', { id: r.id, approved_by: 'Yahav' }, who);
+  assert.throws(
+    () => getDb().prepare("UPDATE node SET status = 'approved', approved_by = 'Yahav' WHERE id = ?").run(r.id),
+    /rule is not a proposed, current rule/,
+  );
 });
 
 test('refutes flips the thought to refuted', async () => {
@@ -154,7 +198,7 @@ test('node_file rows are written from files[]', async () => {
 
 test('footer: outcome gate appears for a 15-day-old action', async () => {
   const a = (await callVerb('log', { kind: 'action', title: 'Old undone action', why: 'x' }, who)) as any;
-  getDb().prepare("UPDATE node SET created_at = datetime('now', '-15 days') WHERE id = ?").run(a.id);
+  getDb().prepare("UPDATE node SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-15 days') WHERE id = ?").run(a.id);
   const res = (await callVerb('search', { kind: 'action' }, who)) as any;
   assert.ok(res.footer.some((l: string) => l.includes(`#${a.id}`) && l.toLowerCase().includes('outcome')));
 });
@@ -166,6 +210,23 @@ test('ask() with Jev off returns plain FTS order and jev:false', async () => {
   assert.equal(res.jev, false);
   assert.ok(res.hits.length >= 1);
   assert.equal(res.hits[0].title, 'Pricing toggle causes churn');
+});
+
+test('created_at is ISO-8601 UTC with a Z suffix', async () => {
+  const t = (await callVerb('log', { kind: 'thought', title: 'Timestamp format check', why: '' }, who)) as any;
+  const row = getDb().prepare('SELECT created_at FROM node WHERE id = ?').get(t.id) as { created_at: string };
+  assert.match(row.created_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+});
+
+test('apiVersion() bumps when a different connection writes directly (PRAGMA data_version)', async () => {
+  const before = apiVersion().version;
+  const other = new DatabaseSync(join(tmpDir, 'brain.db'));
+  other.exec(
+    "INSERT INTO node (kind, title, why, status, agent, hash) VALUES ('thought', 'External write', '', 'open', 'external', 'ext-write-hash-1')",
+  );
+  other.close();
+  const after = apiVersion().version;
+  assert.notEqual(after, before);
 });
 
 // ---- Jev (judge()) ----
@@ -250,6 +311,39 @@ test('/api/pre shadow mode: high noul still allows, and logs a would_deny line',
   assert.equal(mine[0].mode, 'semantic');
 });
 
+// ---- /api/pre advice (repo_root, exact match) ----
+
+test('/api/pre advice: repo_root strips to an exact repo-relative match', async () => {
+  const a = (await callVerb(
+    'log',
+    { kind: 'action', title: 'Touched the pricing page', why: 'x', project: 'reddgrow', files: ['apps/web/app/pricing/page.tsx'] },
+    who,
+  )) as any;
+  const result = await apiPre({
+    tool_name: 'Edit',
+    tool_input: { file_path: '/Users/yahavfuchs/WebstormProjects/reddgrow/apps/web/app/pricing/page.tsx' },
+    project: 'reddgrow',
+    repo_root: '/Users/yahavfuchs/WebstormProjects/reddgrow',
+    session_id: `pre-advice-${Math.random()}`,
+  });
+  assert.ok(result.context && result.context.includes(`#${a.id}`));
+});
+
+test('/api/pre advice: a same-suffix but different path is NOT matched (exact match, no LIKE)', async () => {
+  // A node touched the short path "app/pricing/page.tsx". The old suffix-LIKE query
+  // ("fp LIKE '%' || nf.path") would false-positive-match a longer, unrelated path that
+  // merely ENDS with the same suffix ("apps/web/app/pricing/page.tsx"). Exact match must not.
+  await callVerb('log', { kind: 'action', title: 'Touched a short-path page', why: 'x', project: 'reddgrow', files: ['app/pricing/page.tsx'] }, who);
+  const result = await apiPre({
+    tool_name: 'Edit',
+    tool_input: { file_path: '/Users/yahavfuchs/WebstormProjects/reddgrow/apps/web/app/pricing/page.tsx' },
+    project: 'reddgrow',
+    repo_root: '/Users/yahavfuchs/WebstormProjects/reddgrow',
+    session_id: `pre-advice-nomatch-${Math.random()}`,
+  });
+  assert.equal(result.context, undefined);
+});
+
 // ---- HTTP: host/origin guard ----
 
 function rawGet(port: number, headers: Record<string, string>): Promise<{ status: number; body: string }> {
@@ -275,6 +369,47 @@ test('HTTP: bad Host header -> 403, loopback -> 200', async () => {
     const parsed = JSON.parse(good.body);
     assert.ok('version' in parsed);
     assert.deepEqual(parsed, apiVersion());
+  } finally {
+    await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+  }
+});
+
+// ---- HTTP hygiene: body parsing / size cap ----
+
+function rawPost(port: number, path: string, body: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: '127.0.0.1', port, path, method: 'POST', headers: { Host: `127.0.0.1:${port}`, 'content-type': 'application/json' } },
+      (res) => {
+        let respBody = '';
+        res.on('data', (c) => { respBody += c; });
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: respBody }));
+      },
+    );
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
+test('HTTP: malformed JSON body -> 400 {error}', async () => {
+  await new Promise<void>((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
+  try {
+    const port = (httpServer.address() as any).port;
+    const res = await rawPost(port, '/api/call', '{not valid json');
+    assert.equal(res.status, 400);
+    assert.ok('error' in JSON.parse(res.body));
+  } finally {
+    await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+  }
+});
+
+test('HTTP: a body over 1MB -> 413', async () => {
+  await new Promise<void>((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
+  try {
+    const port = (httpServer.address() as any).port;
+    const big = JSON.stringify({ verb: 'search', args: { query: 'x'.repeat(2 * 1024 * 1024) } });
+    const res = await rawPost(port, '/api/call', big);
+    assert.equal(res.status, 413);
   } finally {
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
   }

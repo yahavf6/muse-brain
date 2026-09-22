@@ -77,6 +77,23 @@ get_project() {
   basename "$root"
 }
 
+get_repo_root() {
+  local cwd="$1"
+  [ -n "$cwd" ] || { printf ''; return; }
+  git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || printf ''
+}
+
+# guards_effectively_off -- BRAIN_GUARDS=off in the hook's own env silences guards; if that
+# env var is unset here, fall back to grepping (never sourcing) ~/.brain/.env for the same
+# key, since the server reads that file too. ~/.brain/.env is the single place to flip it.
+guards_effectively_off() {
+  local v="${BRAIN_GUARDS:-}" envfile="$BRAIN_HOME/.brain/.env"
+  if [ -z "$v" ] && [ -f "$envfile" ]; then
+    v=$(grep -m1 '^BRAIN_GUARDS=' "$envfile" 2>/dev/null | cut -d= -f2-)
+  fi
+  [ "$v" = "off" ]
+}
+
 marker_path() {
   local sid="$1" td
   td="${TMPDIR:-/tmp}"; td="${td%/}"
@@ -168,7 +185,7 @@ cmd_recall() {
 }
 
 cmd_pre() {
-  local tool_name tool_input_json cwd project session_id rc
+  local tool_name tool_input_json cwd project repo_root session_id rc
   local where guard_query guard_rows row g_id g_title g_tool g_deny reason
 
   tool_name=$(safe_jq '.tool_name' '')
@@ -179,9 +196,10 @@ cmd_pre() {
   fi
   cwd=$(safe_jq '.cwd' '')
   project=$(get_project "$cwd")
+  repo_root=$(get_repo_root "$cwd")
   session_id=$(safe_jq '.session_id' '')
 
-  if [ "${BRAIN_GUARDS:-}" != "off" ] && [ -f "$DB" ]; then
+  if ! guards_effectively_off && [ -f "$DB" ]; then
     where=$(sql_project_where project "$project")
     guard_query="select json_object('id',id,'title',title,'guard',json_extract(props,'\$.guard')) from node where kind='rule' and status='approved' and valid_to is null and json_extract(props,'\$.guard.deny_if') is not null and $where;"
     guard_rows=$("$SQLITE" -readonly "$DB" "$guard_query" 2>&1); rc=$?
@@ -211,8 +229,8 @@ EOF
 
   local payload response decision reason2 context rc2
   payload=$("$JQ" -cn --arg tool_name "$tool_name" --argjson tool_input "$tool_input_json" \
-    --arg project "$project" --arg session_id "$session_id" \
-    '{tool_name:$tool_name, tool_input:$tool_input, project:(if $project=="" then null else $project end), session_id:$session_id}' 2>&1); rc2=$?
+    --arg project "$project" --arg repo_root "$repo_root" --arg session_id "$session_id" \
+    '{tool_name:$tool_name, tool_input:$tool_input, project:(if $project=="" then null else $project end), repo_root:$repo_root, session_id:$session_id}' 2>&1); rc2=$?
   if [ $rc2 -ne 0 ]; then
     log_error "pre: payload build failed: $payload"
     return 0
@@ -402,6 +420,30 @@ EOF
 EOF
 )
   assert_empty "pre: plain git push -> silent" "$out"
+
+  # --- get_repo_root: git repo -> toplevel path; non-repo cwd -> empty ---
+  local repo_dir rr
+  repo_dir="$scratch/a-git-repo"
+  mkdir -p "$repo_dir"
+  (cd "$repo_dir" && git init -q) >/dev/null 2>&1
+  rr=$(get_repo_root "$repo_dir")
+  assert_contains "get_repo_root: git repo returns its toplevel" "$rr" "$repo_dir"
+  rr=$(get_repo_root "$scratch")
+  assert_empty "get_repo_root: non-repo cwd -> empty" "$rr"
+  # `pre` sends repo_root alongside project on every call (verified above in the em-dash/
+  # force-push cases via the deny path); end-to-end delivery to /api/pre is covered by the
+  # live curl check in the task's verification section -- this harness has no fake HTTP
+  # server to assert the outgoing JSON body against, so it is not re-asserted here.
+
+  # --- BRAIN_GUARDS=off (via ~/.brain/.env, not the process env) silences the regex guard ---
+  mkdir -p "$shome/.brain"
+  printf 'BRAIN_GUARDS=off\n' > "$shome/.brain/.env"
+  out=$(BRAIN_DB="$db" HOME="$shome" BRAIN_PORT=1 bash "$self" pre <<'EOF'
+{"tool_name":"mcp__gmail__send_message","tool_input":{"body":"Hello — world"},"cwd":"/tmp","session_id":"st-envoff"}
+EOF
+)
+  assert_empty "pre: BRAIN_GUARDS=off via ~/.brain/.env silences the em-dash guard" "$out"
+  rm -f "$shome/.brain/.env"
 
   # --- mark + stop: world only -> block ---
   BRAIN_DB="$db" HOME="$shome" bash "$self" mark <<'EOF' >/dev/null

@@ -4,9 +4,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "node src/server.ts",
-    "test": "node --test test/*.test.ts",
-    "seed": "node scripts/seed-demo.ts"
+    "start": "node --no-warnings=ExperimentalWarning src/server.ts",
+    "test": "node --no-warnings=ExperimentalWarning --test test/*.test.ts",
+    "seed": "node --no-warnings=ExperimentalWarning scripts/seed-demo.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",

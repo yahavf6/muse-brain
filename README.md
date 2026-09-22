@@ -154,14 +154,17 @@ See the `brain` skill for the 4 node kinds, the edge vocabulary, and worked `log
 ```
 TYPESAFE_API_KEY=sk-...
 BRAIN_JEV_GUARDS=shadow
+BRAIN_GUARDS=off
 ```
 
 `TYPESAFE_API_KEY` absent = Jev (semantic ranking/guards) off, everything else still works off plain FTS. `BRAIN_JEV_GUARDS=shadow` (default) logs what a semantic guard would have done without blocking; flip to `on` once you trust it.
+
+`~/.brain/.env` is the single place to flip `BRAIN_GUARDS=on|off`: the server loads it at startup (`process.loadEnvFile`), and the hook falls back to grepping this file (never sourcing it) whenever `BRAIN_GUARDS` isn't already set in its own process environment. Setting it here silences both the hook's local regex guards and the server's semantic guards -- no shell profile or `settings.json` edit needed.
 
 ## Troubleshooting
 
 - Logs: `~/.brain/logs/server.log` (server), `~/.brain/logs/hook.log` (hook errors: always fail-open, check here first if a hook seems silent), `~/.brain/logs/guard.log` (every guard decision, JSONL), `~/.brain/logs/launchd.log` (service stdout/stderr).
 - Hook doing nothing? Run `bash /Users/yahavfuchs/WebstormProjects/muse-brain/hooks/brain-hook.sh --selftest`: should print all `PASS`.
-- Kill-switch for guards without touching rules: set `BRAIN_GUARDS=off` in the environment the hook runs in (e.g. export it in your shell profile, or add to the hook's env in `settings.json`) to pass every tool call through unchecked.
+- Kill-switch for guards without touching rules: set `BRAIN_GUARDS=off` in `~/.brain/.env` (see Env file, above) to pass every tool call through unchecked -- both the hook and the server read it from there, no shell profile or `settings.json` edit needed.
 - `BRAIN_DB` overrides the DB path (used by the selftest; can also point at a scratch DB for manual testing).
 - Service not starting: `launchctl print gui/$(id -u)/ai.reddgrow.brain` and check `~/.brain/logs/launchd.log`.
