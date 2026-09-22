@@ -117,7 +117,7 @@ url = "http://127.0.0.1:4747/mcp?agent=codex"
 ```json
 {
   "mcpServers": {
-    "brain": { "httpUrl": "http://127.0.0.1:4747/mcp?agent=gemini-cli" }
+    "brain": { "url": "http://127.0.0.1:4747/mcp?agent=gemini-cli", "type": "http" }
   }
 }
 ```
