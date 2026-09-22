@@ -28,11 +28,15 @@ The graph page is the **Operate** surface: opened on purpose, minutes at a time,
 
 ## Capabilities and Constraints
 
-Four node kinds only: thought, action, rule, conclusion. Company-wide or per-project scope. No delete verb; superseded/retired nodes are kept and faded. Guards can deny, ask, or allow a tool call; only approved rules are live. V1 is local-only (loopback); v2 adds cloud agent access.
+Four node kinds only: thought, action, rule, conclusion. Company-wide or per-project scope. Superseded/retired nodes are normally kept and faded, not deleted; the founder can still edit or delete a node or an edge directly from the graph page (admin-scope `update`/`delete_node`/`delete_edge`/`link`), always behind a confirmation for anything destructive. Guards can deny, ask, or allow a tool call; only approved rules are live. V1 is local-only (loopback); v2 adds cloud agent access.
+
+## Connecting an Agent
+
+The graph page's Connect-agent panel is the founder's own onboarding flow for a new coding agent: it shows the server URL, repo path, and one status row per client (Claude Code, Codex, Cursor, Gemini CLI, Claude Desktop, other) with an Install button that writes that client's MCP config directly, no terminal step required. It auto-opens the first time the page loads and no agent has ever been seen.
 
 ## Brand Commitments
 
-Direction round outcome: the category standard played straight (dark canvas, force-directed constellation, inspector at the side) with **Linear** as the quality bar. Single dark theme, committed (no light/dark swap). One reserved amber, meaning exactly "waiting on you." Anti-goals: glow, gradients, 3D, HUD ornaments, numbered eyebrows, cards inside cards, a second accent. No em-dashes anywhere in copy.
+Direction round outcome: the category standard played straight (dark canvas, force-directed constellation, inspector at the side) with **Linear** as the quality bar. Single dark theme, committed (no light/dark swap). One reserved amber, meaning exactly "waiting on you." Anti-goals: glow, gradients, HUD ornaments, numbered eyebrows, cards inside cards, a second accent. No em-dashes anywhere in copy.
 
 ## Evidence on Hand
 

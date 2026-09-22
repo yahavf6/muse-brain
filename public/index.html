@@ -6,27 +6,30 @@ THESIS: A living, legible constellation of the company's reasoning, built to Lin
 standard: precise, quiet, keyboard-first, every signal encodes a fact.
 
 OWN-WORLD: Single dark theme, committed, no theme swap. Near-black ground/canvas/panel,
-8% white hairlines. Kind hues: thought circle, action square, rule hexagon, conclusion
-triangle (+/-/~ verdict glyph). Hollow = open/proposed, faded = retired/refuted, dashed
-ring = proposed rule. Amber means "waiting on you"; red marks guard denials. System font
-for chrome, JetBrains Mono for ids/timestamps/agents, tabular numerals. A 2px ring plus a
-240ms scale-in marks arrivals only; layout settles once and stays still; reduced-motion
-turns it off.
+8% white hairlines. Kind hues: thought sphere, action cube, rule hex prism, conclusion
+cone (+/-/~ verdict prefix in the label). Wireframe = open/proposed, faded = retired/
+refuted/superseded. Amber means "waiting on you"; red marks guard denials and destructive
+actions. System font for chrome, JetBrains Mono for ids/timestamps/agents, tabular
+numerals. A 2px ring plus a 240ms scale-in marks arrivals only; layout settles once and
+stays still; reduced-motion turns it off. Rendered with 3d-force-graph (WebGL, orbit
+camera) over the same kind-shape-color grammar.
 
 STORY: Open it: the last slice of the company's thinking sits settled and readable, a
 quiet strip says what needs you. Click a node, its reasons and consequences light up, the
-rest dims. Press / and ask in words. Watch nodes arrive without the picture rearranging.
+rest dims, the camera moves to frame it. Press / and ask in words. Watch nodes arrive
+without the picture rearranging. Connect an agent, edit or delete a node, right there.
 
 FIRST VIEWPORT (1440x900): 44px top bar (wordmark, kind chips, range, project, live dot,
-Present, "/" hint); canvas fills the rest minus a 360px right column stacking Needs-you
-above Inspector; 28px mono activity strip along the bottom. 13px UI / 12px mono, 8px grid,
-6px radii, hairline dividers, no cards inside cards.
+Connect agent, Present, "/" hint); canvas fills the rest minus a 360px right column
+stacking Needs-you above Inspector (or the connect panel in its place); 28px mono activity
+strip along the bottom. 13px UI / 12px mono, 8px grid, 6px radii, hairline dividers, no
+cards inside cards.
 
 FORM: trace on click or "#id" - 2-hop chain full opacity, rest at 18%, edges labeled,
 left/right arrows walk cause/effect, Esc clears. / or Cmd+K opens ask; "#N" jumps; Cmd+
-Shift+T opens an accessible table. Present hides the right column and strip. States: empty
-brain, server unreachable, Jev unreachable. Anti-goals: glow, gradients, 3D, HUD ornaments,
-eyebrows, nested cards, a second accent.
+Shift+T opens an accessible table. Present hides the right column and strip, grows labels,
+auto-rotates the camera. States: empty brain, server unreachable, Jev unreachable.
+Anti-goals: glow, gradients, HUD ornaments, eyebrows, nested cards, a second accent.
 -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -49,6 +52,7 @@ eyebrows, nested cards, a second accent.
   --k-conclusion:#c98500;
   --amber:#f5b342;
   --red:#ef6a62;
+  --live-ok:#3fbf5f;
   --edge:#3a3a41;
   --edge-hot:#9a9aa3;
   --radius:6px;
@@ -61,7 +65,7 @@ body{
   margin:0; background:var(--ground); color:var(--ink-1); font-family:var(--sans);
   font-size:13px; line-height:1.45; -webkit-font-smoothing:antialiased; overflow:hidden;
 }
-button, select, input{ font-family:inherit; font-size:inherit; color:inherit; }
+button, select, input, textarea{ font-family:inherit; font-size:inherit; color:inherit; }
 button{ background:none; }
 :focus{ outline:none; }
 :focus-visible{ outline:2px solid var(--k-thought); outline-offset:2px; border-radius:4px; }
@@ -73,6 +77,7 @@ button{ background:none; }
 *::-webkit-scrollbar-thumb:hover{ background:var(--ink-3); }
 .mono{ font-family:var(--mono); font-variant-numeric:tabular-nums; }
 .tabular{ font-variant-numeric:tabular-nums; }
+.hidden{ display:none !important; }
 
 #app{ display:flex; flex-direction:column; height:100vh; }
 
@@ -95,11 +100,17 @@ button{ background:none; }
 .select{ background:var(--panel); border:1px solid var(--hair); border-radius:var(--radius); padding:4px 8px; color:var(--ink-2); }
 .select:hover{ border-color:var(--hair-strong); }
 
-.topbar-right{ display:flex; align-items:center; gap:14px; margin-left:auto; }
+.topbar-right{ display:flex; align-items:center; gap:10px; margin-left:auto; }
 .live{ display:flex; align-items:center; gap:6px; color:var(--ink-2); font-size:12px; white-space:nowrap; }
-.live-dot{ width:6px; height:6px; border-radius:50%; background:#3fbf5f; flex:none; }
+.live-dot{ width:6px; height:6px; border-radius:50%; background:var(--live-ok); flex:none; }
 .live.reconnecting .live-dot{ background:var(--ink-3); }
 
+.btn{ padding:4px 9px; border:1px solid var(--hair); border-radius:var(--radius); background:none; color:var(--ink-2); cursor:pointer; font-size:12px; }
+.btn:hover{ color:var(--ink-1); border-color:var(--hair-strong); }
+.btn[aria-pressed="true"]{ color:var(--ink-1); border-color:var(--hair-strong); background:rgba(255,255,255,.06); }
+.btn.small{ padding:2px 7px; font-size:11px; border-radius:4px; }
+.btn.danger{ color:var(--red); border-color:rgba(239,106,98,.4); }
+.btn.danger:hover{ background:rgba(239,106,98,.08); border-color:var(--red); }
 .present-toggle{ padding:4px 9px; border:1px solid var(--hair); border-radius:var(--radius); color:var(--ink-2); cursor:pointer; font-size:12px; }
 .present-toggle[aria-pressed="true"]{ color:var(--ink-1); border-color:var(--hair-strong); background:rgba(255,255,255,.06); }
 
@@ -109,6 +120,8 @@ button{ background:none; }
 .main{ flex:1; display:flex; min-height:0; }
 .canvas-wrap{ flex:1; position:relative; background:var(--canvas); min-width:0; }
 #graph{ position:absolute; inset:0; }
+#graph .scene-tooltip{ font-family:var(--sans); }
+.node-tip{ font-size:12px; color:var(--ink-1); background:var(--panel); border:1px solid var(--hair); border-radius:4px; padding:4px 8px; }
 
 .empty-state{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; }
 .empty-state.hidden{ display:none; }
@@ -116,11 +129,15 @@ button{ background:none; }
 .empty-inner p.lead{ color:var(--ink-1); margin:0; }
 .empty-ways{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px; text-align:left; }
 .empty-ways li{ font-family:var(--mono); font-size:12px; color:var(--ink-2); padding:8px 10px; border:1px solid var(--hair); border-radius:var(--radius); }
+.empty-ways li.has-btn{ padding:0; }
+.empty-ways li.has-btn button{ all:unset; box-sizing:border-box; display:block; width:100%; padding:8px 10px; font:inherit; color:inherit; cursor:pointer; text-align:left; }
+.empty-ways li.has-btn button:hover{ color:var(--ink-1); background:rgba(255,255,255,.04); }
 
 .rightcol{ width:360px; flex:0 0 360px; background:var(--panel); border-left:1px solid var(--hair); display:flex; flex-direction:column; min-height:0; }
 .panel{ display:flex; flex-direction:column; min-height:0; }
 .panel-needs{ flex:0 1 auto; max-height:46%; border-bottom:1px solid var(--hair); }
 .panel-inspector{ flex:1; min-height:0; }
+.panel-connect{ flex:1; min-height:0; }
 .panel-head{ flex:0 0 auto; display:flex; align-items:center; gap:8px; padding:10px 12px; font-size:12px; font-weight:600; color:var(--ink-1); }
 .panel-head .count{ color:var(--amber); }
 .panel-body{ flex:1; overflow:auto; padding:0 12px 12px; display:flex; flex-direction:column; gap:8px; }
@@ -132,6 +149,7 @@ button{ background:none; }
 .need-meta{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .need-phrase{ color:var(--amber); }
 .need-days{ color:var(--ink-2); }
+.need-actions{ display:flex; gap:4px; flex:none; }
 .copy-btn{ border:1px solid var(--hair); border-radius:4px; color:var(--ink-2); font-size:11px; padding:2px 6px; cursor:pointer; }
 .copy-btn:hover{ color:var(--ink-1); border-color:var(--hair-strong); }
 .guard-decision.deny{ color:var(--red); }
@@ -144,15 +162,57 @@ button{ background:none; }
 .insp-kind{ font-size:12px; color:var(--ink-2); }
 .insp-id{ font-size:12px; color:var(--ink-3); }
 .insp-state{ margin-left:auto; font-size:11px; color:var(--ink-2); background:rgba(255,255,255,.05); border-radius:4px; padding:2px 6px; }
+.insp-head .btn{ margin-left:auto; }
+.insp-head .insp-state + .btn{ margin-left:8px; }
 .insp-title{ font-size:14px; font-weight:600; color:var(--ink-1); margin-top:8px; line-height:1.35; }
 .insp-fields{ margin:10px 0 0; display:grid; grid-template-columns:76px minmax(0,1fr); gap:6px 10px; font-size:12px; }
 .insp-fields dt{ color:var(--ink-3); margin:0; }
 .insp-fields dd{ margin:0; color:var(--ink-2); overflow-wrap:anywhere; }
 .insp-sub{ margin:14px 0 6px; font-size:11px; font-weight:600; color:var(--ink-2); text-transform:uppercase; letter-spacing:.04em; }
 .conn-list{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:4px; }
-.conn-row{ width:100%; text-align:left; border:1px solid var(--hair); border-radius:4px; padding:6px 8px; cursor:pointer; color:var(--ink-1); font-size:12px; display:flex; flex-direction:column; gap:1px; }
+.conn-row-wrap{ display:flex; align-items:stretch; gap:4px; }
+.conn-row{ flex:1; min-width:0; text-align:left; border:1px solid var(--hair); border-radius:4px; padding:6px 8px; cursor:pointer; color:var(--ink-1); font-size:12px; display:flex; flex-direction:column; gap:1px; }
 .conn-row:hover{ border-color:var(--hair-strong); background:rgba(255,255,255,.03); }
 .conn-type{ color:var(--ink-2); }
+.conn-del{ flex:0 0 auto; border:1px solid var(--hair); border-radius:4px; color:var(--ink-2); font-size:12px; padding:0 9px; cursor:pointer; }
+.conn-del:hover{ color:var(--red); border-color:var(--red); }
+
+/* inspector edit form */
+.edit-field{ display:flex; flex-direction:column; gap:4px; margin-top:10px; }
+.edit-field label{ font-size:12px; color:var(--ink-3); }
+.edit-field input, .edit-field select, .edit-field textarea{ background:var(--canvas); border:1px solid var(--hair); border-radius:4px; padding:5px 7px; color:var(--ink-1); width:100%; }
+.edit-field input:hover, .edit-field select:hover, .edit-field textarea:hover{ border-color:var(--hair-strong); }
+.edit-field textarea{ min-height:52px; resize:vertical; font-family:var(--mono); font-size:11.5px; }
+.edit-note{ font-size:11px; color:var(--ink-3); margin:4px 0 0; }
+.edit-actions{ display:flex; gap:8px; margin-top:12px; }
+.edit-error{ color:var(--red); font-size:11.5px; margin-top:6px; display:flex; align-items:center; gap:8px; }
+.link-row{ display:flex; gap:4px; align-items:center; margin-top:6px; flex-wrap:wrap; }
+.link-row select{ background:var(--canvas); border:1px solid var(--hair); border-radius:4px; padding:3px 5px; color:var(--ink-1); font-size:11.5px; }
+.link-row input{ width:64px; background:var(--canvas); border:1px solid var(--hair); border-radius:4px; padding:3px 5px; color:var(--ink-1); font-size:11.5px; font-family:var(--mono); }
+.danger-zone{ margin-top:16px; padding-top:12px; border-top:1px solid var(--hair); }
+
+/* connect-agent panel */
+.connect-head{ flex:0 0 auto; display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom:1px solid var(--hair); }
+.connect-head h2{ font-size:12px; font-weight:600; margin:0; flex:1; color:var(--ink-1); }
+.connect-body{ flex:1; overflow:auto; padding:12px; display:flex; flex-direction:column; gap:14px; }
+.connect-meta{ display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--ink-2); }
+.connect-meta .mono{ color:var(--ink-1); word-break:break-all; }
+.curl-row{ display:flex; align-items:center; gap:6px; }
+.curl-row code{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--mono); font-size:11.5px; color:var(--ink-1); background:rgba(255,255,255,.04); border:1px solid var(--hair); border-radius:4px; padding:4px 6px; }
+.client-row{ border:1px solid var(--hair); border-radius:var(--radius); padding:10px; display:flex; flex-direction:column; gap:8px; }
+.client-top{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.client-name{ font-size:12.5px; color:var(--ink-1); font-weight:600; flex:1; }
+.client-tokens{ display:flex; gap:6px; font-size:11px; flex-wrap:wrap; }
+.token{ padding:2px 6px; border-radius:4px; border:1px solid var(--hair); color:var(--ink-2); white-space:nowrap; }
+.token.warn{ color:var(--amber); border-color:rgba(245,179,66,.4); }
+.token.ok{ color:var(--live-ok); border-color:rgba(63,191,95,.35); }
+.client-result{ font-family:var(--mono); font-size:11px; color:var(--ink-2); white-space:pre-wrap; }
+.client-result.err{ color:var(--red); }
+details.client-config{ font-size:11.5px; color:var(--ink-2); }
+details.client-config summary{ cursor:pointer; }
+details.client-config pre{ margin:8px 0 0; padding:8px; background:rgba(255,255,255,.03); border:1px solid var(--hair); border-radius:4px; font-family:var(--mono); font-size:11px; color:var(--ink-1); overflow:auto; white-space:pre-wrap; word-break:break-all; max-height:200px; }
+.client-line{ font-size:11px; color:var(--ink-2); margin:6px 0 0; }
+.other-row input{ background:var(--canvas); border:1px solid var(--hair); border-radius:4px; padding:4px 6px; color:var(--ink-1); font-family:var(--mono); font-size:11.5px; width:100%; }
 
 .activity-strip{ flex:0 0 28px; height:28px; background:var(--panel); border-top:1px solid var(--hair); display:flex; align-items:center; gap:18px; padding:0 12px; overflow:hidden; font-family:var(--mono); font-size:11.5px; color:var(--ink-2); }
 .activity-strip .line{ white-space:nowrap; flex:none; }
@@ -203,6 +263,7 @@ table.node-table td.title-cell{ white-space:normal; }
     </div>
     <div class="topbar-right">
       <div class="live tabular" id="liveIndicator"><span class="live-dot"></span><span class="live-text" id="liveText">connecting&hellip;</span></div>
+      <button type="button" class="btn" id="connectBtn">Connect agent</button>
       <button type="button" class="present-toggle" id="presentToggle" aria-pressed="false">Present</button>
       <span class="kbd-hint">/ ask</span>
     </div>
@@ -214,7 +275,7 @@ table.node-table td.title-cell{ white-space:normal; }
         <div class="empty-inner">
           <p class="lead">Nothing logged yet.</p>
           <ul class="empty-ways">
-            <li>Connect an agent (README)</li>
+            <li class="has-btn"><button type="button" id="emptyConnectBtn">connect an agent</button></li>
             <li>Log from chat: ask your agent to log a thought</li>
             <li>Seed the demo story: npm run seed</li>
           </ul>
@@ -222,13 +283,17 @@ table.node-table td.title-cell{ white-space:normal; }
       </div>
     </div>
     <div class="rightcol" id="rightCol">
-      <div class="panel panel-needs">
+      <div class="panel panel-needs" id="needsPanel">
         <div class="panel-head">Needs you <span class="count mono" id="needsCount">0</span></div>
         <div class="panel-body" id="needsBody"><p class="needs-empty">Nothing needs you</p></div>
       </div>
-      <div class="panel panel-inspector">
+      <div class="panel panel-inspector" id="inspectorPanel">
         <div class="panel-head">Inspector</div>
         <div class="panel-body" id="inspectorBody"><p class="insp-empty">Select a node, or press / to ask</p></div>
+      </div>
+      <div class="panel panel-connect hidden" id="connectPanel">
+        <div class="connect-head"><h2>Connect agent</h2><button type="button" class="btn small" id="connectBack">Back</button></div>
+        <div class="connect-body" id="connectBody"><p class="insp-empty">Loading&hellip;</p></div>
       </div>
     </div>
   </div>
@@ -250,13 +315,15 @@ table.node-table td.title-cell{ white-space:normal; }
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/force-graph@1.51.4/dist/force-graph.min.js"></script>
-<script>
+<script type="module">
+import ForceGraph3D from 'https://cdn.jsdelivr.net/npm/3d-force-graph@1.80.0/+esm';
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.183.2/+esm';
 (function(){
 'use strict';
 
 var API = '';
 var MONO = '"JetBrains Mono", ui-monospace, Menlo, monospace';
+var SANS = '-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif';
 var KINDS = ['thought','action','rule','conclusion'];
 
 function $(s,root){ return (root||document).querySelector(s); }
@@ -267,7 +334,7 @@ function cap(s){ return s ? s.charAt(0).toUpperCase()+s.slice(1) : ''; }
 /* Timestamps the server writes are always ISO-8601 with a Z suffix, but be defensive:
    normalize any zone-less string (no trailing Z or +-HH:MM) to UTC before Date.parse,
    everywhere a timestamp string is parsed (live indicator, activity strip, needs rows,
-   inspector's time-derived fields, and the graph's time-x force). */
+   inspector's time-derived fields, connect-panel relative times, and the time-x force). */
 function parseTs(s){
   if(typeof s === 'number') return s;
   if(!s) return NaN;
@@ -292,12 +359,25 @@ async function fetchJSON(path, opts){
     return await res.json();
   }catch(e){ return null; }
 }
+async function postJSON(path, body){
+  var res;
+  try{ res = await fetch(API+path, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) }); }
+  catch(e){ throw new Error('Could not reach the brain.'); }
+  var data = await res.json().catch(function(){ return {}; });
+  if(!res.ok) throw new Error(data.error || ('request failed: '+res.status));
+  return data;
+}
+/* POST /api/call with admin scope (agent:'ui'); throws Error(body.error) on non-2xx. */
+function callVerbUI(verb, args){
+  return postJSON('/api/call', { verb: verb, args: args, agent: 'ui' });
+}
 
 /* ---------- tokens ---------- */
 var cs = getComputedStyle(document.documentElement);
 function tok(name){ return cs.getPropertyValue(name).trim(); }
 var T = {
-  canvas: tok('--canvas'), ink1: tok('--ink-1'), ink2: tok('--ink-2'), ink3: tok('--ink-3'),
+  canvas: tok('--canvas'), panel: tok('--panel'), hair: tok('--hair'),
+  ink1: tok('--ink-1'), ink2: tok('--ink-2'), ink3: tok('--ink-3'),
   edge: tok('--edge'), edgeHot: tok('--edge-hot'),
   thought: tok('--k-thought'), action: tok('--k-action'), rule: tok('--k-rule'), conclusion: tok('--k-conclusion')
 };
@@ -313,114 +393,179 @@ var state = {
   reduceMotion: window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
   connected: true,
   agents: [],
+  seen: [],
   jevOn: true,
   trace: null,
   hoverId: null,
   previewId: null,
+  editing: null,
   sliceIds: new Set(),
   projects: new Set(),
   paletteOpen: false,
   paletteHasResults: false,
   paletteRows: [],
   paletteIndex: -1,
-  tableOpen: false
+  tableOpen: false,
+  connectOpen: false,
+  installData: null
 };
 
 var gNodes = new Map(), gLinks = new Map();
 var arrivals = new Map(), flips = new Map();
 var Graph = null;
 var firstLoadDone = false;
+var firstEngineStopDone = false;
 var lastWriteMs = null;
 var activityLines = [];
 
-/* ---------- shapes (canvas drawing reused/restyled from the earlier demo) ---------- */
-var TITLE_ZOOM = 2.2; /* passive title labels only kick in past this scale; hot/Present nodes bypass it */
+/* ---------- shared node/edge helpers ---------- */
 function isFaded(n){ return !!n.valid_to || n.status==='refuted' || n.status==='retired'; }
 function isHollow(n){ return n.status==='open' || n.status==='proposed'; }
-function isDashedProposed(n){ return n.kind==='rule' && n.status==='proposed'; }
-function baseRadius(n){ var r = 7 + Math.min(n.deg||0,6)*0.85; return state.present ? r*1.5 : r; }
+// ponytail: radius fixed from degree-at-creation; a node doesn't grow after it gains more
+// edges without a full re-add. Rebuild geometry on degree change if that turns out to matter.
+function baseRadius(n){ return 4 + Math.min(n.deg||0,6)*0.8; }
 function easeOutCubic(p){ return 1 - Math.pow(1-p, 3); }
-function shapePath(ctx, kind, x, y, r){
-  ctx.beginPath();
-  if(kind==='thought'){ ctx.arc(x,y,r,0,2*Math.PI); }
-  else if(kind==='action'){ var s=r*0.88; ctx.rect(x-s,y-s,2*s,2*s); }
-  else if(kind==='rule'){ for(var i=0;i<6;i++){ var a=Math.PI/3*i+Math.PI/6, px=x+r*1.12*Math.cos(a), py=y+r*1.12*Math.sin(a); if(i) ctx.lineTo(px,py); else ctx.moveTo(px,py); } ctx.closePath(); }
-  else { var rr=r*1.28; ctx.moveTo(x,y-rr); ctx.lineTo(x+rr*0.95,y+rr*0.72); ctx.lineTo(x-rr*0.95,y+rr*0.72); ctx.closePath(); }
-}
 function endId(e){ return typeof e==='object' ? e.id : e; }
+function sourceNode(l){ return typeof l.source==='object' ? l.source : gNodes.get(l.source); }
 function linkKey(l){ return endId(l.source)+'|'+l.type+'|'+endId(l.target); }
 function inChain(id){ return !!(state.trace && state.trace.chainIds.has(id)); }
 function isChainLink(l){ return !!(state.trace && state.trace.edgeKeys.has(linkKey(l))); }
-
-function drawNode(n, ctx, scale){
-  var col = KIND_COLOR[n.kind] || T.ink3;
-  var r = baseRadius(n);
-  var alpha = isFaded(n) ? 0.34 : 1;
-  if(state.trace && !inChain(n.id)) alpha *= 0.18;
-  var drawR = r, ringAlpha = 0;
-  var at = arrivals.get(n.id);
-  if(at != null){ var p = Math.min(1,(performance.now()-at)/240); var pe = easeOutCubic(p); drawR = r*(0.35+0.65*pe); ringAlpha = Math.max(ringAlpha,1-pe); if(p>=1) arrivals.delete(n.id); }
-  var ft = flips.get(n.id);
-  if(ft != null){ var p2 = Math.min(1,(performance.now()-ft)/240); var p2e = easeOutCubic(p2); ringAlpha = Math.max(ringAlpha,1-p2e); if(p2>=1) flips.delete(n.id); }
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  shapePath(ctx, n.kind, n.x, n.y, drawR);
-  if(isHollow(n)){
-    ctx.fillStyle = T.canvas; ctx.fill();
-    ctx.lineWidth = 1.6; ctx.strokeStyle = col;
-    if(isDashedProposed(n)) ctx.setLineDash([3,2]);
-    ctx.stroke(); ctx.setLineDash([]);
-  } else {
-    ctx.fillStyle = col; ctx.fill();
-    ctx.lineWidth = 1.4; ctx.strokeStyle = T.canvas; ctx.stroke();
-  }
-  if(n.kind==='conclusion' && n.verdict){
-    ctx.fillStyle = isHollow(n) ? col : T.canvas;
-    ctx.font = '600 '+(drawR*1.05)+'px '+MONO;
-    ctx.textAlign='center'; ctx.textBaseline='middle';
-    ctx.fillText(n.verdict==='good'?'+':n.verdict==='bad'?'-':'~', n.x, n.y+drawR*0.14);
-  }
-  ctx.globalAlpha = 1;
-  if(ringAlpha > 0.02){
-    ctx.globalAlpha = ringAlpha;
-    shapePath(ctx, n.kind, n.x, n.y, r+3);
-    ctx.lineWidth = 2; ctx.strokeStyle = col; ctx.stroke();
-    ctx.globalAlpha = 1;
-  }
-  if(state.trace && state.trace.rootId===n.id){
-    shapePath(ctx, n.kind, n.x, n.y, r+3.4);
-    ctx.lineWidth = 1.4; ctx.strokeStyle = T.ink1; ctx.stroke();
-  }
-  /* #id: always on at rest, constant ~10px apparent size regardless of zoom, muted ink */
-  var idFs = (state.present ? 12 : 10) / scale;
-  ctx.font = idFs+'px '+MONO; ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillStyle=T.ink3;
-  ctx.fillText('#'+n.id, n.x, n.y+r*1.35+1.5);
-
-  /* title: only when hot (hover/selected/traced) or zoomed in past TITLE_ZOOM; always in Present */
-  var hot = n.id===state.hoverId || n.id===state.previewId || inChain(n.id);
-  if(state.present || hot || scale > TITLE_ZOOM){
-    var t = n.title.length>44 ? n.title.slice(0,43)+'…' : n.title;
-    var tf = Math.max(11/scale, 3.2);
-    ctx.font = '500 '+tf+'px '+MONO;
-    var w = ctx.measureText(t).width, ty = n.y - r*1.6 - tf - 2/scale;
-    ctx.fillStyle = T.canvas; ctx.globalAlpha=0.94; ctx.fillRect(n.x-w/2-4/scale, ty-3/scale, w+8/scale, tf+6/scale);
-    ctx.globalAlpha=1; ctx.fillStyle=T.ink1; ctx.fillText(t, n.x, ty);
-  }
-  ctx.restore();
-}
-function paintArea(n, color, ctx){ ctx.fillStyle=color; ctx.beginPath(); ctx.arc(n.x,n.y,baseRadius(n)+5,0,2*Math.PI); ctx.fill(); }
-function drawLinkLabel(l, ctx, scale){
-  if(!isChainLink(l) || typeof l.source!=='object' || typeof l.target!=='object') return;
-  var x=(l.source.x+l.target.x)/2, y=(l.source.y+l.target.y)/2, fs=Math.max(9.5/scale,2.6);
-  ctx.save(); ctx.font=fs+'px '+MONO; var w=ctx.measureText(l.type).width;
-  ctx.fillStyle=T.canvas; ctx.globalAlpha=0.94; ctx.fillRect(x-w/2-3/scale,y-fs/2-2/scale,w+6/scale,fs+4/scale);
-  ctx.globalAlpha=1; ctx.fillStyle=T.ink2; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(l.type,x,y);
-  ctx.restore();
+function isHotNode(id){ return state.present || id===state.hoverId || id===state.previewId || inChain(id); }
+function verdictPrefix(n){ return n.verdict==='good'?'+':n.verdict==='bad'?'-':n.verdict==='mixed'?'~':''; }
+/* Screen-space label sizes (px), not world units: #id alone, #id+title when hot, bigger in Present. */
+var EDGE_LABEL_PX = 11;
+function labelPxFor(hot){ return state.present ? 15 : (hot ? 13 : 11); }
+function labelTextFor(n, hot){
+  var idPart = '#'+n.id;
+  if(!hot) return idPart;
+  var t = n.title || '';
+  if(t.length>48) t = t.slice(0,47)+'…';
+  if(n.kind==='conclusion'){ var p = verdictPrefix(n); if(p) t = p+' '+t; }
+  return idPart+'  '+t;
 }
 function nodeVisible(n){ if(!state.kinds.has(n.kind)) return false; return state.sliceIds.has(n.id) || inChain(n.id); }
 function linkVisible(l){ var s=gNodes.get(endId(l.source)), t=gNodes.get(endId(l.target)); return !!s && !!t && nodeVisible(s) && nodeVisible(t); }
+function nodeLabelHtml(n){ return '<div class="node-tip mono">#'+n.id+' &middot; '+esc(n.title)+'</div>'; }
 
-/* ---------- light left-to-right time force ---------- */
+/* ---------- text-sprite labels (shared texture cache, one Sprite per node) ---------- */
+var textureCache = new Map();
+function splitLabelText(text){
+  var m = text.match(/^(#\d+)(?:\s\s(.*))?$/);
+  if(!m) return { id: text, title: '' };
+  return { id: m[1], title: m[2] || '' };
+}
+function getLabelTexture(text, color){
+  var key = text+'|'+color;
+  var hit = textureCache.get(key);
+  if(hit) return hit;
+  var parts = splitLabelText(text);
+  var dpr = Math.min(window.devicePixelRatio||1, 2);
+  var idFont = '500 30px '+MONO, titleFont = '500 28px '+SANS;
+  var probe = document.createElement('canvas').getContext('2d');
+  probe.font = idFont; var idW = probe.measureText(parts.id).width;
+  var gap = parts.title ? 10 : 0;
+  probe.font = titleFont; var titleW = parts.title ? probe.measureText(parts.title).width : 0;
+  var padX = 12, h = 40;
+  var w = Math.max(1, Math.ceil(idW+gap+titleW) + padX*2);
+  var canvas = document.createElement('canvas');
+  canvas.width = Math.ceil(w*dpr); canvas.height = Math.ceil(h*dpr);
+  var ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.textAlign='left'; ctx.textBaseline='middle'; ctx.fillStyle = color;
+  ctx.font = idFont; ctx.fillText(parts.id, padX, h/2);
+  if(parts.title){ ctx.font = titleFont; ctx.fillText(parts.title, padX+idW+gap, h/2); }
+  var tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  var entry = { tex: tex, aspect: w/h };
+  textureCache.set(key, entry);
+  return entry;
+}
+/* Screen-space sprite scale: with sizeAttenuation off, scale isn't world units any more, it's
+   derived from the projection matrix + viewport height so text renders at a fixed pixel size
+   regardless of camera distance or node radius. Depends on Graph.height()/camera(), so it must
+   be recomputed whenever either changes (resize, Present toggle) -- see rescaleAllLabels(). */
+function updateSpriteScale(sprite, px){
+  if(!Graph) return;
+  var cam = Graph.camera(), h = Graph.height();
+  if(!cam || !h) return;
+  var s = px * 2 / (cam.projectionMatrix.elements[5] * h);
+  sprite.scale.set(s * sprite.__aspect, s, 1);
+}
+function makeLabel(text, color, px){
+  var t = getLabelTexture(text, color);
+  var mat = new THREE.SpriteMaterial({ map: t.tex, depthWrite:false, transparent:true, sizeAttenuation:false });
+  var sprite = new THREE.Sprite(mat);
+  sprite.center.set(0.5, -0.35); /* anchors the label above the mesh's pivot, gap constant on screen */
+  sprite.raycast = function(){}; /* picks hit the mesh, not the label */
+  sprite.__aspect = t.aspect;
+  updateSpriteScale(sprite, px);
+  return sprite;
+}
+function rescaleAllLabels(){
+  if(!Graph) return;
+  gNodes.forEach(function(n){ if(n.__label) updateSpriteScale(n.__label, labelPxFor(isHotNode(n.id))); });
+  gLinks.forEach(function(l){ if(l.__label) updateSpriteScale(l.__label, EDGE_LABEL_PX); });
+}
+
+/* ---------- node geometry per kind ---------- */
+function geometryFor(kind, r){
+  if(kind==='thought') return new THREE.SphereGeometry(r, 16, 12);
+  if(kind==='action'){ var s=r*1.5; return new THREE.BoxGeometry(s,s,s); }
+  if(kind==='rule') return new THREE.CylinderGeometry(r, r, r*1.2, 6); /* hex prism */
+  return new THREE.ConeGeometry(r, r*1.8, 12);
+}
+function makeNodeObject(n){
+  var r = baseRadius(n);
+  var col = KIND_COLOR[n.kind] || T.ink3;
+  var geo = geometryFor(n.kind, r);
+  var mat = new THREE.MeshLambertMaterial({ color: col, transparent:true, wireframe: isHollow(n), opacity: isFaded(n)?0.35:1 });
+  var mesh = new THREE.Mesh(geo, mat);
+  var group = new THREE.Group();
+  group.add(mesh);
+  n.__mesh = mesh;
+  var hot = isHotNode(n.id);
+  var px = labelPxFor(hot);
+  var text = labelTextFor(n, hot), color = hot ? T.ink1 : T.ink3;
+  var label = makeLabel(text, color, px);
+  group.add(label);
+  n.__label = label;
+  n.__labelKey = text+'|'+color+'|'+px;
+  return group;
+}
+function applyMeshStyle(n){
+  if(!n.__mesh) return;
+  var mesh = n.__mesh;
+  var dimmed = !!(state.trace && !inChain(n.id));
+  mesh.material.opacity = dimmed ? 0.18 : (isFaded(n) ? 0.35 : 1);
+  mesh.material.wireframe = isHollow(n);
+}
+/* Replaces every Graph.refresh() call site: the WebGL scene renders continuously, so
+   mutating mesh/label objects here is enough for meshes; linkColor is re-set because
+   3d-force-graph only recomputes link visuals when its accessor is re-invoked. */
+function refreshNodeStyles(){
+  gNodes.forEach(function(n){
+    applyMeshStyle(n);
+    if(!n.__mesh) return;
+    var hot = isHotNode(n.id);
+    var px = labelPxFor(hot);
+    var text = labelTextFor(n, hot), color = hot ? T.ink1 : T.ink3;
+    var key = text+'|'+color+'|'+px;
+    if(n.__labelKey !== key){
+      var group = n.__mesh.parent;
+      if(group && n.__label){ group.remove(n.__label); if(n.__label.material) n.__label.material.dispose(); }
+      var label = makeLabel(text, color, px);
+      if(group) group.add(label);
+      n.__label = label; n.__labelKey = key;
+    }
+  });
+  if(Graph) Graph.linkColor(Graph.linkColor());
+}
+function disposeNodeObject(n){
+  if(n.__mesh){ n.__mesh.geometry.dispose(); n.__mesh.material.dispose(); }
+  if(n.__label && n.__label.material) n.__label.material.dispose();
+}
+
+/* ---------- light left-to-right time force (x-only) ---------- */
 /* ponytail: linear time->x heuristic recomputed on every alpha tick; fine at <=2000 nodes */
 var timeRange = { min:0, max:1 };
 function updateTimeRange(){
@@ -442,33 +587,22 @@ function timeXForce(alpha){
 }
 timeXForce.initialize = function(){};
 
-/* weak pull toward the canvas center (0,0 in force-graph's coordinate space) so sparse,
-   disconnected clusters stay compact instead of drifting apart under charge repulsion */
+/* weak pull toward the scene origin (all three axes) so sparse, disconnected clusters
+   stay compact instead of drifting apart under charge repulsion */
 function centerPullForce(alpha){
   gNodes.forEach(function(n){
-    if(n.x==null || n.y==null) return;
+    if(n.x==null || n.y==null || n.z==null) return;
     n.vx = (n.vx||0) + (0-n.x) * 0.02 * alpha;
     n.vy = (n.vy||0) + (0-n.y) * 0.02 * alpha;
+    n.vz = (n.vz||0) + (0-n.z) * 0.02 * alpha;
   });
 }
 centerPullForce.initialize = function(){};
 
 function computeDegrees(){
   var deg = new Map();
-  gLinks.forEach(function(l){ deg.set(l.source,(deg.get(l.source)||0)+1); deg.set(l.target,(deg.get(l.target)||0)+1); });
+  gLinks.forEach(function(l){ deg.set(endId(l.source),(deg.get(endId(l.source))||0)+1); deg.set(endId(l.target),(deg.get(endId(l.target))||0)+1); });
   gNodes.forEach(function(n){ n.deg = deg.get(n.id)||0; });
-}
-
-/* ---------- arrival/flip animation loop ---------- */
-var animating = false;
-function tickAnimations(){
-  if(Graph && Graph.refresh) Graph.refresh();
-  var any = arrivals.size>0 || flips.size>0;
-  if(any) requestAnimationFrame(tickAnimations); else animating = false;
-}
-function ensureAnimating(){
-  if(state.reduceMotion){ arrivals.clear(); flips.clear(); return; }
-  if(!animating){ animating = true; requestAnimationFrame(tickAnimations); }
 }
 
 /* ---------- activity strip ---------- */
@@ -490,6 +624,7 @@ setInterval(function(){ if(activityLines.length) renderActivity(); }, 1000);
 function syncGraph(freshList, isSliceFetch){
   var isFirst = !firstLoadDone;
   var newIds = [];
+  var anyFlip = false;
   freshList.nodes.forEach(function(n){
     var g = gNodes.get(n.id);
     var isNew = !g;
@@ -501,13 +636,21 @@ function syncGraph(freshList, isSliceFetch){
         if(e.src===n.id && gNodes.get(e.dst)){ nb = gNodes.get(e.dst); break; }
         if(e.dst===n.id && gNodes.get(e.src)){ nb = gNodes.get(e.src); break; }
       }
-      if(nb && nb.x!=null){ g.x = nb.x+(Math.random()-0.5)*40; g.y = nb.y+(Math.random()-0.5)*40; }
+      if(nb && nb.x!=null){
+        g.x = nb.x+(Math.random()-0.5)*40;
+        g.y = nb.y+(Math.random()-0.5)*40;
+        g.z = (nb.z||0)+(Math.random()-0.5)*40;
+      } else {
+        g.x = (Math.random()-0.5)*20;
+        g.y = (Math.random()-0.5)*20;
+        g.z = (Math.random()-0.5)*20;
+      }
       gNodes.set(n.id, g);
     }
     var changed = !isNew && (g.status!==n.status || g.verdict!==n.verdict);
     Object.assign(g, n);
     if(isNew) newIds.push(n.id);
-    else if(changed && !isFirst){ flips.set(n.id, performance.now()); pushActivity(n.agent, n.kind+' #'+n.id+' → '+(n.verdict||n.status||''), Date.now()); }
+    else if(changed && !isFirst){ flips.set(n.id, performance.now()); anyFlip = true; pushActivity(n.agent, n.kind+' #'+n.id+' → '+(n.verdict||n.status||''), Date.now()); }
   });
   if(!isFirst){
     newIds.forEach(function(id){ arrivals.set(id, performance.now()); var n=gNodes.get(id); pushActivity(n.agent, 'logged '+n.kind+' #'+id, Date.now()); });
@@ -524,42 +667,85 @@ function syncGraph(freshList, isSliceFetch){
   computeDegrees();
   updateTimeRange();
   if(Graph) Graph.graphData({ nodes: Array.from(gNodes.values()), links: Array.from(gLinks.values()) });
-  if(isFirst && Graph){ var g0 = Graph; setTimeout(function(){ g0.zoomToFit(0, 60); }, 80); }
-  if(!isFirst) ensureAnimating();
+  if(state.reduceMotion){ arrivals.clear(); flips.clear(); }
+  else if(!isFirst && (newIds.length || anyFlip) && Graph) Graph.d3ReheatSimulation();
   firstLoadDone = true;
   refreshEmptyState();
+  refreshNodeStyles();
 }
 function refreshEmptyState(){
   $('#emptyState').classList.toggle('hidden', !(firstLoadDone && gNodes.size===0));
 }
+function removeFromMaps(id){
+  gNodes.delete(id);
+  gLinks.forEach(function(l,k){ if(endId(l.source)===id || endId(l.target)===id) gLinks.delete(k); });
+  if(Graph) Graph.graphData({ nodes: Array.from(gNodes.values()), links: Array.from(gLinks.values()) });
+}
 
-/* ---------- force-graph setup ---------- */
+/* ---------- 3D force-graph setup ---------- */
 function initGraph(){
-  if(typeof ForceGraph === 'undefined') return;
   var host = $('#graph');
-  Graph = new ForceGraph(host)
-    .nodeId('id').nodeLabel(function(){ return ''; })
-    .nodeCanvasObject(drawNode).nodePointerAreaPaint(paintArea)
+  Graph = new ForceGraph3D(host, { controlType:'orbit' })
+    .nodeId('id')
+    .nodeLabel(nodeLabelHtml)
+    .nodeThreeObject(makeNodeObject).nodeThreeObjectExtend(false)
     .nodeVisibility(nodeVisible)
     .linkVisibility(linkVisible)
-    .linkColor(function(l){ return isChainLink(l) ? T.edgeHot : T.edge; })
+    .linkColor(function(l){ if(!isChainLink(l)) return 'rgba(255,255,255,0.10)'; var s=sourceNode(l); return (s && KIND_COLOR[s.kind]) || T.edgeHot; })
     .linkWidth(function(l){ return isChainLink(l) ? 1.6 : 1; })
     .linkDirectionalArrowLength(4).linkDirectionalArrowRelPos(1)
-    .linkCanvasObjectMode(function(){ return 'after'; }).linkCanvasObject(drawLinkLabel)
-    .autoPauseRedraw(true)
-    .warmupTicks(180).cooldownTicks(100)
+    .linkThreeObjectExtend(true)
+    .linkThreeObject(function(l){ var s = makeLabel(l.type, T.ink2, EDGE_LABEL_PX); l.__label = s; return s; })
+    .linkPositionUpdate(function(obj, coords, l){
+      obj.position.set((coords.start.x+coords.end.x)/2, (coords.start.y+coords.end.y)/2, (coords.start.z+coords.end.z)/2);
+      obj.visible = isChainLink(l);
+    })
     .backgroundColor(T.canvas)
+    .showNavInfo(false)
+    .warmupTicks(120).cooldownTicks(200)
     .onNodeClick(function(n){ traceNode(n.id); })
-    .onNodeHover(function(n){ state.hoverId = n ? n.id : null; host.style.cursor = n ? 'pointer' : ''; if(Graph) Graph.refresh(); })
+    .onNodeHover(function(n){ state.hoverId = n ? n.id : null; host.style.cursor = n ? 'pointer' : ''; refreshNodeStyles(); })
     .onBackgroundClick(function(){ clearTrace(); })
-    .onEngineStop(function(){ Graph.zoomToFit(state.reduceMotion?0:400, 48); });
+    .onEngineTick(function(){
+      if(state.reduceMotion){ if(arrivals.size||flips.size){ arrivals.clear(); flips.clear(); } return; }
+      var now = performance.now();
+      arrivals.forEach(function(t0, id){
+        var n = gNodes.get(id); if(!n || !n.__threeObj) return;
+        var p = Math.min(1,(now-t0)/240);
+        n.__threeObj.scale.setScalar(0.2+0.8*easeOutCubic(p));
+        if(p>=1) arrivals.delete(id);
+      });
+      flips.forEach(function(t0, id){
+        var n = gNodes.get(id); if(!n || !n.__threeObj) return;
+        var p = Math.min(1,(now-t0)/240);
+        var s = p<0.5 ? 1+0.12*easeOutCubic(p*2) : 1+0.12*(1-easeOutCubic((p-0.5)*2));
+        n.__threeObj.scale.setScalar(s);
+        if(p>=1){ n.__threeObj.scale.setScalar(1); flips.delete(id); }
+      });
+    })
+    .onEngineStop(function(){
+      window.__brainSettled = true;
+      if(!firstEngineStopDone){ firstEngineStopDone = true; Graph.zoomToFit(state.reduceMotion?0:400, 24); }
+    });
   Graph.d3Force('x', timeXForce);
   Graph.d3Force('centerPull', centerPullForce);
-  Graph.d3Force('charge').strength(-160).distanceMax(150);
-  Graph.d3Force('link').distance(70);
-  function size(){ var b=host.getBoundingClientRect(); if(b.width>0) Graph.width(b.width).height(b.height); }
-  size();
-  if(window.ResizeObserver) new ResizeObserver(size).observe(host); else window.addEventListener('resize', size);
+  Graph.d3Force('charge').strength(-120).distanceMax(120);
+  Graph.d3Force('link').distance(55);
+  var controls = Graph.controls();
+  if(controls) controls.autoRotateSpeed = 0.4;
+  var resizeFitTimer = null;
+  function scheduleResizeFit(){
+    if(state.trace) return;
+    if(resizeFitTimer) clearTimeout(resizeFitTimer);
+    resizeFitTimer = setTimeout(function(){
+      resizeFitTimer = null;
+      if(!state.trace && Graph) Graph.zoomToFit(state.reduceMotion?0:400, 24);
+    }, 200);
+  }
+  function applySize(){ var b=host.getBoundingClientRect(); if(b.width>0){ Graph.width(b.width).height(b.height); rescaleAllLabels(); } }
+  applySize();
+  function onHostResize(){ applySize(); scheduleResizeFit(); }
+  if(window.ResizeObserver) new ResizeObserver(onHostResize).observe(host); else window.addEventListener('resize', onHostResize);
 }
 
 /* ---------- trace ---------- */
@@ -573,14 +759,26 @@ async function traceNode(id){
   var outIds = data.edges.filter(function(e){ return e.src===id; }).map(function(e){ return e.dst; });
   var inIds = data.edges.filter(function(e){ return e.dst===id; }).map(function(e){ return e.src; });
   state.trace = { rootId:id, chainIds:nodeIds, edgeKeys:edgeKeys, outIds:outIds, inIds:inIds, outCursor:0, inCursor:0 };
+  state.editing = null;
   renderInspector(id);
-  if(Graph){ var g = gNodes.get(id); if(g && g.x!=null) Graph.centerAt(g.x, g.y, state.reduceMotion?0:400); }
-  if(Graph) Graph.refresh();
+  refreshNodeStyles();
+  if(Graph){
+    var g = gNodes.get(id);
+    if(state.trace.chainIds.size > 1){
+      /* frame the whole traced chain, not just the root */
+      Graph.zoomToFit(state.reduceMotion?0:600, 80, function(nn){ return state.trace.chainIds.has(nn.id); });
+    } else if(g && g.x!=null){
+      var hyp = Math.hypot(g.x, g.y, g.z||0);
+      var eye = hyp < 1e-6 ? { x:g.x, y:g.y, z:(g.z||0)+70 } : (function(){ var k=1+70/hyp; return { x:g.x*k, y:g.y*k, z:(g.z||0)*k }; })();
+      Graph.cameraPosition(eye, g, state.reduceMotion?0:600);
+    }
+  }
 }
 function clearTrace(){
   state.trace = null;
+  state.editing = null;
   $('#inspectorBody').innerHTML = '<p class="insp-empty">Select a node, or press / to ask</p>';
-  if(Graph) Graph.refresh();
+  refreshNodeStyles();
 }
 function walkChain(dir){
   if(!state.trace) return;
@@ -592,7 +790,26 @@ function walkChain(dir){
   traceNode(next);
 }
 
-/* ---------- inspector ---------- */
+/* ---------- legal edges (edge_rule, docs/contracts.md) ---------- */
+var EDGE_RULES = [
+  { type:'motivated_by', src:'action', dst:'thought' },
+  { type:'complies_with', src:'action', dst:'rule' },
+  { type:'follows', src:'action', dst:'action' },
+  { type:'evaluates', src:'conclusion', dst:'action' },
+  { type:'supports', src:'conclusion', dst:'thought' },
+  { type:'refutes', src:'conclusion', dst:'thought' },
+  { type:'derived_from', src:'thought', dst:'conclusion' },
+  { type:'derived_from', src:'rule', dst:'conclusion' },
+  { type:'supersedes', src:'rule', dst:'rule' }
+];
+function legalTypesFor(kind, dir){
+  var key = dir==='out' ? 'src' : 'dst';
+  var seen = new Set(), out = [];
+  EDGE_RULES.forEach(function(r){ if(r[key]===kind && !seen.has(r.type)){ seen.add(r.type); out.push(r.type); } });
+  return out;
+}
+
+/* ---------- inspector (read view) ---------- */
 var SHAPE_SVG = {
   thought:'<circle cx="7" cy="7" r="6"/>',
   action:'<rect x="1.6" y="1.6" width="10.8" height="10.8"/>',
@@ -620,24 +837,170 @@ function renderInspector(id){
   fields.push(['Rev', '<span class="mono">'+String(n.rev||1)+'</span>']);
   var out = [], inc = [];
   gLinks.forEach(function(l){
-    if(l.source===id){ var t=gNodes.get(l.target); if(t) out.push({ type:l.type, node:t }); }
-    if(l.target===id){ var s=gNodes.get(l.source); if(s) inc.push({ type:l.type, node:s }); }
+    if(endId(l.source)===id){ var t=gNodes.get(endId(l.target)); if(t) out.push({ type:l.type, node:t }); }
+    if(endId(l.target)===id){ var s=gNodes.get(endId(l.source)); if(s) inc.push({ type:l.type, node:s }); }
   });
   function connRow(c, dir){
-    return '<li><button type="button" class="conn-row" data-goto="'+c.node.id+'"><span class="conn-type mono">'+(dir==='out'?esc(c.type)+' →':'← '+esc(c.type))+'</span><span>#'+c.node.id+' '+esc(c.node.title)+'</span></button></li>';
+    var key = dir==='out' ? (id+'|'+c.type+'|'+c.node.id) : (c.node.id+'|'+c.type+'|'+id);
+    return '<li><div class="conn-row-wrap"><button type="button" class="conn-row" data-goto="'+c.node.id+'"><span class="conn-type mono">'+(dir==='out'?esc(c.type)+' →':'← '+esc(c.type))+'</span><span>#'+c.node.id+' '+esc(c.node.title)+'</span></button><button type="button" class="conn-del" data-del-edge="'+esc(key)+'" title="Delete edge">×</button></div></li>';
   }
+  var linkDirOptions = '<option value="out">Out →</option><option value="in">← In</option>';
   box.innerHTML =
-    '<div class="insp-head">'+kindGlyph(n.kind, KIND_COLOR[n.kind])+'<span class="insp-kind">'+cap(n.kind)+'</span><span class="insp-id mono">#'+n.id+'</span>'+(stateLabel?'<span class="insp-state mono">'+esc(stateLabel)+'</span>':'')+'</div>'+
+    '<div class="insp-head">'+kindGlyph(n.kind, KIND_COLOR[n.kind])+'<span class="insp-kind">'+cap(n.kind)+'</span><span class="insp-id mono">#'+n.id+'</span>'+(stateLabel?'<span class="insp-state mono">'+esc(stateLabel)+'</span>':'')+'<button type="button" class="btn small" id="editBtn">Edit</button></div>'+
     '<div class="insp-title">'+esc(n.title)+'</div>'+
     '<dl class="insp-fields">'+fields.map(function(f){ return '<dt>'+f[0]+'</dt><dd>'+f[1]+'</dd>'; }).join('')+'</dl>'+
     (out.length ? '<p class="insp-sub">Outgoing</p><ul class="conn-list">'+out.map(function(c){ return connRow(c,'out'); }).join('')+'</ul>' : '') +
     (inc.length ? '<p class="insp-sub">Incoming</p><ul class="conn-list">'+inc.map(function(c){ return connRow(c,'in'); }).join('')+'</ul>' : '') +
-    (!out.length && !inc.length ? '<p class="insp-sub">Connections</p><p class="insp-empty">None yet.</p>' : '');
+    (!out.length && !inc.length ? '<p class="insp-sub">Connections</p><p class="insp-empty">None yet.</p>' : '') +
+    '<p class="insp-sub">+ Link</p>' +
+    '<div class="link-row">'+
+      '<select id="linkDir" aria-label="Direction">'+linkDirOptions+'</select>'+
+      '<select id="linkType" aria-label="Edge type"></select>'+
+      '<input type="text" id="linkTarget" placeholder="#id" inputmode="numeric" aria-label="Target node id">'+
+      '<button type="button" class="btn small" id="linkGo">Link</button>'+
+    '</div>'+
+    '<div class="edit-error hidden" id="linkError"></div>'+
+    '<div class="danger-zone"><button type="button" class="btn danger" id="deleteNodeBtn">Delete #'+n.id+'</button></div>';
+  populateLinkTypeSelect(n.kind, 'out');
+  $('#editBtn').addEventListener('click', function(){ state.editing=id; renderInspectorEdit(id); });
+  $('#linkDir').addEventListener('change', function(){ populateLinkTypeSelect(n.kind, $('#linkDir').value); });
+  $('#linkGo').addEventListener('click', function(){ addLinkUI(n, $('#linkDir').value, $('#linkType').value, $('#linkTarget').value); });
+  $('#deleteNodeBtn').addEventListener('click', function(){ deleteNodeUI(id); });
 }
-$('#inspectorBody').addEventListener('click', function(ev){
+function populateLinkTypeSelect(kind, dir){
+  var types = legalTypesFor(kind, dir);
+  var sel = $('#linkType');
+  if(!sel) return;
+  sel.innerHTML = types.length ? types.map(function(t){ return '<option value="'+esc(t)+'">'+esc(t)+'</option>'; }).join('') : '<option value="">No legal edges</option>';
+}
+async function addLinkUI(n, dir, type, targetRaw){
+  var box = $('#linkError');
+  box.classList.add('hidden'); box.innerHTML = '';
+  var target = parseInt(String(targetRaw||'').replace('#',''), 10);
+  if(!target || !type){ box.textContent = 'Pick a type and a target #id.'; box.classList.remove('hidden'); return; }
+  var args = dir==='out' ? { src:n.id, type:type, dst:target } : { src:target, type:type, dst:n.id };
+  try{ await callVerbUI('link', args); }
+  catch(e){ box.textContent = e.message; box.classList.remove('hidden'); return; }
+  refreshSlice(); refreshNeeds();
+  traceNode(n.id);
+}
+async function deleteNodeUI(id){
+  var n = gNodes.get(id); if(!n) return;
+  var edgeCount = 0;
+  gLinks.forEach(function(l){ if(endId(l.source)===id || endId(l.target)===id) edgeCount++; });
+  if(!confirm('Delete #'+id+' "'+n.title+'" and its '+edgeCount+' edge'+(edgeCount===1?'':'s')+'?')) return;
+  try{ await callVerbUI('delete_node', { id: id }); }
+  catch(e){ alert(e.message); return; }
+  clearTrace();
+  disposeNodeObject(n);
+  removeFromMaps(id);
+  pushActivity('you', 'deleted #'+id, Date.now());
+  refreshSlice(); refreshNeeds();
+}
+$('#inspectorBody').addEventListener('click', async function(ev){
+  var del = ev.target.closest('[data-del-edge]');
+  if(del){
+    var parts = del.getAttribute('data-del-edge').split('|');
+    var src=Number(parts[0]), type=parts[1], dst=Number(parts[2]);
+    if(!confirm('Delete edge '+src+' '+type+' '+dst+'?')) return;
+    try{ await callVerbUI('delete_edge', { src:src, type:type, dst:dst }); }
+    catch(e){ alert(e.message); return; }
+    var rootId = state.trace ? state.trace.rootId : null;
+    gLinks.delete(src+'|'+type+'|'+dst);
+    if(Graph) Graph.graphData({ nodes:Array.from(gNodes.values()), links:Array.from(gLinks.values()) });
+    refreshSlice(); refreshNeeds();
+    if(rootId!=null) traceNode(rootId);
+    return;
+  }
   var b = ev.target.closest('[data-goto]');
   if(b) traceNode(Number(b.getAttribute('data-goto')));
 });
+
+/* ---------- inspector (edit form) ---------- */
+function fieldRow(label, inputHtml){ return '<div class="edit-field"><label>'+label+'</label>'+inputHtml+'</div>'; }
+function linesFrom(arr){ return (arr||[]).join('\n'); }
+function optionsFor(values, current, labeler){
+  return values.map(function(v){ return '<option value="'+v+'"'+(current===v?' selected':'')+'>'+esc(labeler?labeler(v):cap(v))+'</option>'; }).join('');
+}
+function toggleEdit(){
+  if(!state.trace) return;
+  var id = state.trace.rootId;
+  if(state.editing===id){ state.editing=null; renderInspector(id); }
+  else{ state.editing=id; renderInspectorEdit(id); }
+}
+function renderInspectorEdit(id){
+  var n = gNodes.get(id);
+  var box = $('#inspectorBody');
+  if(!n) return;
+  var props = n.props || {};
+  var html = '<div class="insp-head">'+kindGlyph(n.kind, KIND_COLOR[n.kind])+'<span class="insp-kind">'+cap(n.kind)+' · edit</span><span class="insp-id mono">#'+n.id+'</span></div>';
+  html += '<form id="editForm">';
+  html += fieldRow('Title', '<input type="text" name="title" maxlength="160" value="'+esc(n.title)+'" required>');
+  html += fieldRow('Why', '<textarea name="why" rows="3">'+esc(n.why||'')+'</textarea>');
+  html += fieldRow('Project', '<input type="text" name="project" value="'+esc(n.project||'')+'" placeholder="company-wide">');
+  if(n.kind==='thought'){
+    html += fieldRow('Status', '<select name="status">'+optionsFor(['open','validated','refuted'], n.status)+'</select>');
+    html += fieldRow('Confidence 0..1', '<input type="number" name="confidence" min="0" max="1" step="0.05" value="'+(n.confidence!=null?n.confidence:'')+'">');
+  }
+  if(n.kind==='rule'){
+    html += fieldRow('Status', '<select name="status">'+optionsFor(['proposed','retired'], n.status)+'</select><p class="edit-note">Approval happens via Approve in Needs-you.</p>');
+    html += fieldRow('Guard JSON', '<textarea name="guard" rows="3" class="mono">'+esc(props.guard?JSON.stringify(props.guard,null,2):'')+'</textarea>');
+  }
+  if(n.kind==='conclusion'){
+    html += fieldRow('Verdict', '<select name="verdict">'+optionsFor(['good','bad','mixed'], n.verdict)+'</select>');
+  }
+  html += fieldRow('Alternatives, one per line', '<textarea name="alternatives" rows="2" class="mono">'+esc(linesFrom(props.alternatives))+'</textarea>');
+  html += fieldRow('Evidence, one per line', '<textarea name="evidence" rows="2" class="mono">'+esc(linesFrom(props.evidence))+'</textarea>');
+  html += fieldRow('Files, one per line', '<textarea name="files" rows="2" class="mono">'+esc(linesFrom(props.files))+'</textarea>');
+  html += '<div class="edit-error hidden" id="editError"></div>';
+  html += '<div class="edit-actions"><button type="submit" class="btn">Save</button><button type="button" class="btn" id="editCancel">Cancel</button></div>';
+  html += '</form>';
+  box.innerHTML = html;
+  $('#editForm').addEventListener('submit', function(ev){ ev.preventDefault(); saveEdit(id); });
+  $('#editCancel').addEventListener('click', function(){ state.editing=null; renderInspector(id); });
+}
+function showEditError(id, msg, withReload){
+  var box = $('#editError');
+  if(!box) return;
+  box.classList.remove('hidden');
+  box.innerHTML = '<span>'+esc(msg)+'</span>';
+  if(withReload){
+    var btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'btn small'; btn.textContent = 'Reload';
+    btn.addEventListener('click', async function(){ await traceNode(id); state.editing = id; renderInspectorEdit(id); });
+    box.appendChild(btn);
+  }
+}
+async function saveEdit(id){
+  var n = gNodes.get(id);
+  var fd = new FormData($('#editForm'));
+  var args = { id:id, rev:n.rev, title: fd.get('title'), why: fd.get('why')||'' };
+  var project = fd.get('project');
+  if(project) args.project = project;
+  if(n.kind==='thought'){
+    args.status = fd.get('status');
+    var conf = fd.get('confidence');
+    if(conf!=='' && conf!=null) args.confidence = Number(conf);
+  }
+  if(n.kind==='rule'){
+    args.status = fd.get('status');
+    var guardRaw = (fd.get('guard')||'').trim();
+    if(guardRaw){
+      try{ args.guard = JSON.parse(guardRaw); }
+      catch(e){ showEditError(id, 'Guard must be valid JSON'); return; }
+    }
+  }
+  if(n.kind==='conclusion') args.verdict = fd.get('verdict');
+  function splitLines(v){ return (v||'').split('\n').map(function(s){ return s.trim(); }).filter(Boolean); }
+  args.alternatives = splitLines(fd.get('alternatives'));
+  args.evidence = splitLines(fd.get('evidence'));
+  args.files = splitLines(fd.get('files'));
+  try{ await callVerbUI('update', args); }
+  catch(e){ showEditError(id, e.message, /^conflict:/.test(e.message)); return; }
+  state.editing = null;
+  refreshSlice(); refreshNeeds();
+  traceNode(id);
+}
 
 /* ---------- needs you ---------- */
 async function refreshNeeds(){
@@ -654,7 +1017,7 @@ function renderNeeds(data){
   if(!count){ body.innerHTML = '<p class="needs-empty">Nothing needs you</p>'; return; }
   var parts = [];
   proposed.forEach(function(n){
-    parts.push('<div class="need-row" data-goto="'+n.id+'"><div class="need-title" title="'+esc(n.title)+'">'+esc(n.title)+'</div><div class="need-meta"><span class="need-phrase mono">approve rule '+n.id+'</span><button type="button" class="copy-btn" data-copy="approve rule '+n.id+'">Copy</button></div></div>');
+    parts.push('<div class="need-row" data-goto="'+n.id+'"><div class="need-title" title="'+esc(n.title)+'">'+esc(n.title)+'</div><div class="need-meta"><span class="need-phrase mono">approve rule '+n.id+'</span><span class="need-actions"><button type="button" class="copy-btn" data-copy="approve rule '+n.id+'">Copy</button><button type="button" class="copy-btn" data-approve="'+n.id+'">Approve</button><button type="button" class="copy-btn" data-reject="'+n.id+'">Reject</button></span></div></div>');
   });
   stale.forEach(function(n){
     parts.push('<div class="need-row" data-goto="'+n.id+'"><div class="need-title" title="'+esc(n.title)+'">'+esc(n.title)+'</div><div class="need-meta"><span class="need-days mono">'+n.days+'d without an outcome</span></div></div>');
@@ -665,12 +1028,157 @@ function renderNeeds(data){
   });
   body.innerHTML = parts.join('');
 }
-$('#needsBody').addEventListener('click', function(ev){
+async function approveRuleUI(id){
+  var approver;
+  try{ approver = localStorage.getItem('brainApprover'); }catch(e){ approver = null; }
+  if(!approver){
+    approver = prompt('Your name, for the approval record:');
+    if(!approver) return;
+    try{ localStorage.setItem('brainApprover', approver); }catch(e){}
+  }
+  try{ await callVerbUI('approve_rule', { id:id, approved_by:approver }); }
+  catch(e){ alert(e.message); return; }
+  refreshSlice(); refreshNeeds();
+  if(state.trace && state.trace.rootId===id) traceNode(id);
+}
+async function rejectRuleUI(id){
+  var n = gNodes.get(id);
+  if(!confirm('Reject and delete rule #'+id+(n?' "'+n.title+'"':'')+'?')) return;
+  try{ await callVerbUI('delete_node', { id:id }); }
+  catch(e){ alert(e.message); return; }
+  if(n) disposeNodeObject(n);
+  removeFromMaps(id);
+  if(state.trace && state.trace.rootId===id) clearTrace();
+  pushActivity('you', 'deleted #'+id, Date.now());
+  refreshSlice(); refreshNeeds();
+}
+$('#needsBody').addEventListener('click', async function(ev){
   var copyBtn = ev.target.closest('[data-copy]');
   if(copyBtn){ if(navigator.clipboard) navigator.clipboard.writeText(copyBtn.getAttribute('data-copy')).catch(function(){}); return; }
+  var approveBtn = ev.target.closest('[data-approve]');
+  if(approveBtn){ await approveRuleUI(Number(approveBtn.getAttribute('data-approve'))); return; }
+  var rejectBtn = ev.target.closest('[data-reject]');
+  if(rejectBtn){ await rejectRuleUI(Number(rejectBtn.getAttribute('data-reject'))); return; }
   var row = ev.target.closest('[data-goto]');
   if(row) traceNode(Number(row.getAttribute('data-goto')));
 });
+
+/* ---------- connect-agent panel ---------- */
+function findAgent(list, id){ return (list||[]).filter(Boolean).find(function(a){ return a.agent===id; }); }
+async function openConnectPanel(){
+  state.connectOpen = true;
+  $('#needsPanel').classList.add('hidden');
+  $('#inspectorPanel').classList.add('hidden');
+  $('#connectPanel').classList.remove('hidden');
+  $('#connectBtn').setAttribute('aria-pressed','true');
+  $('#connectBody').innerHTML = '<p class="insp-empty">Loading&hellip;</p>';
+  var data = await fetchJSON('/api/install');
+  state.installData = data;
+  renderConnectPanel();
+}
+function closeConnectPanel(){
+  state.connectOpen = false;
+  $('#connectPanel').classList.add('hidden');
+  $('#needsPanel').classList.remove('hidden');
+  $('#inspectorPanel').classList.remove('hidden');
+  $('#connectBtn').setAttribute('aria-pressed','false');
+}
+function renderConnectPanel(){
+  var body = $('#connectBody');
+  var data = state.installData;
+  if(!data){ body.innerHTML = '<p class="insp-empty">Could not reach the brain, or /api/install is not available on this server yet.</p>'; return; }
+  var origin = data.url || location.origin;
+  var curl = 'curl -s '+origin+'/api/version';
+  var html = '';
+  html += '<div class="connect-meta">'+
+    '<div>Server <span class="mono">'+esc(origin)+'</span></div>'+
+    '<div>Repo <span class="mono">'+esc(data.repo_dir||'')+'</span></div>'+
+    '</div>';
+  html += '<div class="curl-row"><code>'+esc(curl)+'</code><button type="button" class="copy-btn" data-copy-text="'+esc(curl)+'">Copy</button></div>';
+  html += '<button type="button" class="btn" id="installAllBtn">Install all</button>';
+  (data.clients||[]).forEach(function(c){ html += renderClientRow(c); });
+  body.innerHTML = html;
+  bindConnectHandlers();
+}
+function renderClientRow(c){
+  if(c.id==='other') return renderOtherRow(c);
+  var seenEntry = findAgent(state.seen, c.id);
+  var writeEntry = findAgent(state.agents, c.id);
+  var configured = c.installed===true ? 'configured' : (c.installed==='partial' ? 'partial' : 'not configured');
+  var configuredCls = c.installed===true ? 'ok' : 'warn';
+  var files = (c.files||[]).map(function(f){ return esc(f.path)+(f.ok===false?' (missing)':''); }).join('<br>');
+  return '<div class="client-row" data-client="'+esc(c.id)+'">'+
+    '<div class="client-top"><span class="client-name">'+esc(c.name)+'</span>'+
+      '<span class="client-tokens">'+
+        '<span class="token '+configuredCls+'">'+configured+'</span>'+
+        '<span class="token '+(seenEntry?'ok':'')+'">'+(seenEntry?'connected '+relTime(seenEntry.last_seen)+' ago':'not connected')+'</span>'+
+        '<span class="token '+(writeEntry?'ok':'')+'">'+(writeEntry?'writing '+relTime(writeEntry.last_write)+' ago':'no writes')+'</span>'+
+      '</span>'+
+      (c.installed===true ? '<span class="mono insp-empty">Installed</span>' : '<button type="button" class="btn small" data-install="'+esc(c.id)+'">Install</button>')+
+    '</div>'+
+    '<details class="client-config"><summary>Show config</summary>'+
+      (files ? '<p class="client-line mono">'+files+'</p>' : '')+
+      '<pre class="mono">'+esc(c.snippet||'')+'</pre>'+
+      '<button type="button" class="copy-btn" data-copy-text="'+esc(c.snippet||'')+'">Copy</button>'+
+      (c.gets ? '<p class="client-line">'+esc(c.gets)+'</p>' : '')+
+      (c.restart ? '<p class="client-line">'+esc(c.restart)+'</p>' : '')+
+    '</details>'+
+    '<div class="client-result" data-result-for="'+esc(c.id)+'"></div>'+
+  '</div>';
+}
+function renderOtherRow(c){
+  return '<div class="client-row other-row" data-client="other">'+
+    '<div class="client-top"><span class="client-name">'+esc(c.name||'Other')+'</span></div>'+
+    '<div class="edit-field"><label>Agent name</label><input type="text" id="otherAgentName" placeholder="my-agent"></div>'+
+    '<div class="curl-row"><code id="otherUrl" class="mono"></code><button type="button" class="copy-btn" id="otherCopy">Copy</button></div>'+
+  '</div>';
+}
+function bindConnectHandlers(){
+  $$('[data-copy-text]', $('#connectBody')).forEach(function(b){
+    b.addEventListener('click', function(){ if(navigator.clipboard) navigator.clipboard.writeText(b.getAttribute('data-copy-text')).catch(function(){}); });
+  });
+  $$('[data-install]', $('#connectBody')).forEach(function(b){
+    b.addEventListener('click', function(){ installClient(b.getAttribute('data-install')); });
+  });
+  var installAll = $('#installAllBtn');
+  if(installAll) installAll.addEventListener('click', installAllClients);
+  var otherInput = $('#otherAgentName');
+  if(otherInput){
+    var updateOtherUrl = function(){
+      var name = otherInput.value.trim() || '<name>';
+      var url = (state.installData.url||location.origin)+'/mcp?agent='+encodeURIComponent(name);
+      $('#otherUrl').textContent = url;
+      $('#otherCopy').setAttribute('data-copy-text', url);
+    };
+    otherInput.addEventListener('input', updateOtherUrl);
+    updateOtherUrl();
+  }
+}
+async function installClient(id){
+  var resultEl = document.querySelector('[data-result-for="'+id+'"]');
+  try{
+    var body = await postJSON('/api/install', { client:id });
+    if(resultEl){
+      resultEl.classList.toggle('err', !!(body.errors&&body.errors.length));
+      resultEl.innerHTML =
+        'changed: '+esc((body.changed||[]).join(', ')||'none')+'\n'+
+        'skipped: '+esc((body.skipped||[]).join(', ')||'none')+
+        (body.backups&&body.backups.length ? '\nbackups: '+esc(body.backups.join(', ')) : '')+
+        (body.errors&&body.errors.length ? '\nerrors: '+esc(body.errors.map(function(e){ return e.path+': '+e.error; }).join('; ')) : '');
+    }
+  }catch(e){
+    if(resultEl){ resultEl.textContent = e.message; resultEl.classList.add('err'); }
+  }
+  var fresh = await fetchJSON('/api/install');
+  if(fresh){ state.installData = fresh; renderConnectPanel(); }
+}
+async function installAllClients(){
+  var clients = ((state.installData && state.installData.clients) || []).filter(function(c){ return c.id!=='other'; });
+  for(var i=0;i<clients.length;i++) await installClient(clients[i].id);
+}
+$('#connectBtn').addEventListener('click', function(){ state.connectOpen ? closeConnectPanel() : openConnectPanel(); });
+$('#connectBack').addEventListener('click', closeConnectPanel);
+$('#emptyConnectBtn').addEventListener('click', openConnectPanel);
 
 /* ---------- top bar controls ---------- */
 function buildTopbarControls(){
@@ -683,7 +1191,7 @@ function buildTopbarControls(){
     var k = b.getAttribute('data-kind');
     if(state.kinds.has(k)) state.kinds.delete(k); else state.kinds.add(k);
     b.setAttribute('aria-pressed', state.kinds.has(k) ? 'true' : 'false');
-    if(Graph){ Graph.nodeVisibility(nodeVisible).linkVisibility(linkVisible); Graph.refresh(); }
+    if(Graph) Graph.nodeVisibility(nodeVisible).linkVisibility(linkVisible);
   });
 
   var seg = $('#rangeSeg');
@@ -705,7 +1213,12 @@ function buildTopbarControls(){
     state.present = !state.present;
     document.body.classList.toggle('present', state.present);
     $('#presentToggle').setAttribute('aria-pressed', state.present ? 'true' : 'false');
-    if(Graph) Graph.refresh();
+    if(Graph){
+      var controls = Graph.controls();
+      if(controls) controls.autoRotate = state.present && !state.reduceMotion;
+    }
+    refreshNodeStyles();
+    rescaleAllLabels(); /* px tier changed (11/13 -> 15); the host also resizes via ResizeObserver */
   });
 }
 function updateProjectOptions(){
@@ -749,6 +1262,7 @@ async function pollVersion(){
   if(!data){ setConnected(false); return; }
   setConnected(true);
   state.agents = data.agents || [];
+  state.seen = data.seen || [];
   state.jevOn = data.jev === 'on';
   var maxT = 0;
   state.agents.forEach(function(a){ var t=parseTs(a.last_write)||0; if(t>maxT) maxT=t; });
@@ -758,6 +1272,7 @@ async function pollVersion(){
     state.version = data.version;
     await loadInitialGraph();
     await refreshNeeds();
+    if(!state.agents.length && !state.seen.length) openConnectPanel();
     return;
   }
   if(data.version !== state.version){
@@ -781,17 +1296,17 @@ function closePalette(){
   state.paletteOpen = false;
   $('#paletteOverlay').classList.add('hidden');
   state.previewId = null;
-  if(Graph) Graph.refresh();
+  refreshNodeStyles();
 }
 function renderPaletteRows(rows){
   state.paletteRows = rows; state.paletteIndex = rows.length ? 0 : -1;
   var list = $('#paletteList');
-  if(!rows.length){ list.innerHTML = '<div class="palette-empty">No matches.</div>'; state.previewId = null; if(Graph) Graph.refresh(); return; }
+  if(!rows.length){ list.innerHTML = '<div class="palette-empty">No matches.</div>'; state.previewId = null; refreshNodeStyles(); return; }
   list.innerHTML = rows.map(function(r, i){
     return '<div class="palette-row" role="option" aria-selected="'+(i===0)+'" data-i="'+i+'">'+kindGlyph(r.kind, KIND_COLOR[r.kind])+'<span class="p-title">'+esc(r.title)+'</span><span class="p-score mono">'+(r.score!=null ? r.score.toFixed(2) : '')+'</span></div>';
   }).join('');
   state.previewId = rows[0].id;
-  if(Graph) Graph.refresh();
+  refreshNodeStyles();
 }
 function updatePaletteSelection(){
   var rows = $$('.palette-row');
@@ -799,11 +1314,12 @@ function updatePaletteSelection(){
   if(rows[state.paletteIndex]) rows[state.paletteIndex].scrollIntoView({ block:'nearest' });
   var row = state.paletteRows[state.paletteIndex];
   state.previewId = row ? row.id : null;
-  if(Graph) Graph.refresh();
+  refreshNodeStyles();
 }
 async function runAsk(question){
-  var res = await fetchJSON('/api/call', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ verb:'ask', args:{ question:question } }) });
-  if(!res){ $('#paletteList').innerHTML = '<div class="palette-empty">Could not reach the brain.</div>'; return; }
+  var res;
+  try{ res = await callVerbUI('ask', { question: question }); }
+  catch(e){ $('#paletteList').innerHTML = '<div class="palette-empty">'+esc(e.message)+'</div>'; return; }
   var noteEl = $('#paletteNote');
   if(res.jev === false){ noteEl.textContent = 'Meaning search off, showing text matches'; noteEl.classList.remove('hidden'); }
   else noteEl.classList.add('hidden');
@@ -858,10 +1374,11 @@ window.addEventListener('keydown', function(ev){
   if(meta && (ev.key==='k' || ev.key==='K')){ ev.preventDefault(); openPalette(); return; }
   if(ev.key==='/' && !isEditable(document.activeElement)){ ev.preventDefault(); openPalette(); return; }
   if(ev.key==='#' && !isEditable(document.activeElement)){ ev.preventDefault(); openPalette('#'); return; }
-  if(ev.key==='Escape'){ if(state.trace) clearTrace(); return; }
+  if(ev.key==='Escape'){ if(state.connectOpen) closeConnectPanel(); else if(state.trace) clearTrace(); return; }
   if(!isEditable(document.activeElement)){
     if(ev.key==='ArrowRight' && state.trace){ ev.preventDefault(); walkChain('out'); }
     else if(ev.key==='ArrowLeft' && state.trace){ ev.preventDefault(); walkChain('in'); }
+    else if((ev.key==='e' || ev.key==='E') && state.trace && !state.connectOpen){ ev.preventDefault(); toggleEdit(); }
   }
 });
 
