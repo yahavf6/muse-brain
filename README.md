@@ -25,6 +25,20 @@ npm start   # node src/server.ts, no build step
 
 Serves the MCP endpoint at `http://127.0.0.1:4747/mcp` and the graph page at `http://127.0.0.1:4747/`.
 
+## Seed demo data
+
+```bash
+npm run seed
+```
+
+Writes a small demo story (thoughts, actions, rules, conclusions) so the graph page and the verbs have something to show on an empty brain. Safety:
+
+- Every seeded node -- rules included -- is scoped `project: 'demo'`, so it can never bind real work: a scoped query (`project IS NULL OR project = <repo>`) only matches `NULL` (company-wide) or the exact repo, never `'demo'`. A demo em-dash guard rule, for example, fires for `project: 'demo'` but not for `project: 'reddgrow'`.
+- The script refuses to run against a DB that already has any node (prints the count, exits 1). Pass `--force` to seed anyway (it will not deduplicate against what's already there; content-hash dedup in `log()` still applies node by node).
+- It always prints the DB path it wrote to (`process.env.BRAIN_DB`, else `~/.brain/brain.db`).
+
+To reseed a scratch DB: `BRAIN_DB=/tmp/mb-verify.db npm run seed -- --force` (or delete the file first).
+
 ## Install as a background service (launchd)
 
 ```bash
@@ -88,6 +102,10 @@ Back up `~/.claude/settings.json` first (or use the `update-config` skill, which
   }
 }
 ```
+
+### How `pre` decides
+
+`PreToolUse` calls the server first: one `curl -s -m 2.5 POST /api/pre`, which runs regex guards, then semantic guards, then file-touch advice, and answers in one round trip (measured on this Mac with the server up: the `curl` itself ~0.5-0.8ms, HTTP-loopback-local, well under the 100ms budget; the full hook invocation, dominated by bash/jq/curl process spawn rather than the network call, ~200ms). The hook's own `sqlite3 -readonly` + `jq` regex-only path only runs as a fallback, when that call is unreachable (curl fails or comes back empty) -- never just because the decision wasn't `allow`.
 
 ## Wire up each client (MCP server, one-time)
 

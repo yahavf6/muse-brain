@@ -79,20 +79,38 @@ const SQLITE_MESSAGE_MAP: [RegExp, string][] = [
   [/rule is not a proposed, current rule/, 'rule is not a proposed, current rule'],
   [/supersedes needs an approved, current rule/, 'supersedes needs an approved, current rule'],
   [/guard_frozen/, "an approved rule's guard cannot change; propose a new rule that supersedes it"],
+  // Belt and braces: zod already rejects these (checkStatusVerdictForKind, log()/update()) before
+  // a write reaches the DB, but the CHECK constraints stay on and get a readable message too.
+  [/CHECK constraint failed:.*length\(why\)/, 'why is required for action and rule nodes'],
+  [/CHECK constraint failed:.*(status IN|verdict IS NOT NULL)/, "status or verdict does not match this node's kind"],
   [/UNIQUE constraint failed: node\.hash/, 'duplicate content'],
   [/UNIQUE constraint failed: edge/, 'that link already exists'],
   [/FOREIGN KEY constraint failed/, 'linked node does not exist'],
 ];
-function cleanSqliteError(e: unknown): Error {
+export function cleanSqliteError(e: unknown): Error {
   const msg = e instanceof Error ? e.message : String(e);
   for (const [re, clean] of SQLITE_MESSAGE_MAP) if (re.test(msg)) return new Error(clean);
   return e instanceof Error ? e : new Error(msg);
 }
 
+// ~60 English stopwords + short tokens dropped before wildcarding, so a conversational prompt
+// ("help me fix the pricing page em dash issue please") doesn't FTS-match on noise words --
+// every remaining token still has to appear (as a prefix) in the node for a hit.
+const STOPWORDS = new Set([
+  'a', 'an', 'the', 'and', 'or', 'but', 'to', 'of', 'in', 'on', 'for', 'with', 'at', 'by', 'from',
+  'is', 'are', 'was', 'were', 'be', 'been', 'it', 'this', 'that', 'these', 'those',
+  'i', 'you', 'we', 'they', 'me', 'my', 'our', 'your', 'please', 'help', 'fix', 'make',
+  'do', 'does', 'can', 'could', 'should', 'would', 'will', 'just', 'also', 'about', 'into',
+  'over', 'after', 'before', 'then', 'than', 'so', 'if', 'not', 'no', 'yes', 'ok',
+  'run', 'use', 'using', 'like', 'get', 'got', 'need', 'want', 'let', 'add', 'new',
+]);
+
 export function buildFtsQuery(q: string): string {
   // ponytail: strip to \w tokens so FTS5 query-syntax chars (- " : ( ) etc.) in the
   // input never reach the MATCH parser; a real tokenizer-aware split is overkill here.
-  const tokens = q.match(/[\p{L}\p{N}]+/gu) ?? [];
+  const tokens = (q.match(/[\p{L}\p{N}]+/gu) ?? [])
+    .map((t) => t.toLowerCase())
+    .filter((t) => t.length >= 3 && !STOPWORDS.has(t));
   return tokens.map((t) => `${t}*`).join(' OR ');
 }
 
@@ -188,13 +206,14 @@ const guardSchema = z
     deny_if: z.string().optional().describe('Regex tested against JSON.stringify(tool_input); a match denies.'),
     judge: z.string().optional().describe('A yes/no question for the semantic guard judge.'),
   })
+  .strict()
   .describe('Only meaningful on a rule node. Frozen once the rule is approved.');
 
 const askInput = z.object({
   question: z.string().min(1),
   project: z.string().optional(),
   limit: z.number().int().positive().max(50).default(10),
-});
+}).strict();
 const searchInput = z.object({
   query: z.string().optional(),
   kind: z.string().optional(),
@@ -202,36 +221,73 @@ const searchInput = z.object({
   verdict: z.string().optional(),
   project: z.string().optional(),
   limit: z.number().int().positive().max(200).default(20),
-});
+}).strict();
 const contextInput = z.object({
   id: z.number().int(),
   hops: z.number().int().positive().max(10).default(2),
-});
-const getInput = z.object({ ids: z.array(z.number().int()).min(1) });
-const logInput = z.object({
-  kind: KIND.describe('thought = an idea/assumption. action = what was done in the real world (needs why). rule = a constraint (needs why). conclusion = a lesson (needs verdict).'),
-  title: z.string().min(1).max(160).describe('One imperative sentence, <=160 chars. Gets injected into other sessions verbatim -- write it to stand alone.'),
-  why: z
-    .string()
-    .max(4000)
-    .optional()
-    .describe(
-      "Required for action and rule. The reasoning, not a restatement of the title. Bad: 'Updated pricing'. Good: 'Yearly-first cut signups, see #19'.",
-    ),
-  status: z.string().optional().describe('thought: open|validated|refuted. rule: proposed|approved|retired (a new rule must be proposed).'),
-  verdict: z.string().optional().describe('Required for conclusion: good | bad | mixed.'),
-  confidence: z.number().optional(),
-  project: z.string().optional().describe('Repo/product this belongs to. Omit for company-wide.'),
-  alternatives: z.array(z.string()).optional().describe('Rejected alternatives, for a decision action.'),
-  evidence: z.array(z.string()).optional(),
-  files: z.array(z.string()).optional().describe('Repo-relative paths the action touched. Enables file-touch advice on future edits.'),
-  guard: guardSchema.optional(),
-  links: z
-    .array(z.object({ type: z.string(), to: z.number().int() }))
-    .optional()
-    .describe('Edges from this new node to existing #ids. An unlinked node is a broken brain -- add at least one.'),
-});
-const linkInput = z.object({ src: z.number().int(), type: z.string(), dst: z.number().int() });
+}).strict();
+const getInput = z.object({ ids: z.array(z.number().int()).min(1) }).strict();
+
+// Per-kind status/verdict enums: thought owns status, conclusion owns verdict, rule's only
+// legal status at log() time is 'proposed' (approve_rule/supersedes move it from there), and
+// action owns neither. Checked in a zod .superRefine so a bad value fails with a readable
+// message before it ever reaches the DB's CHECK constraints (which stay on as belt and braces).
+const THOUGHT_STATUS = z.enum(['open', 'validated', 'refuted']);
+const CONCLUSION_VERDICT = z.enum(['good', 'bad', 'mixed']);
+function checkStatusVerdictForKind(
+  kind: string,
+  status: string | undefined,
+  verdict: string | undefined,
+  ctx: { addIssue: (issue: { code: 'custom'; path: (string | number)[]; message: string }) => void },
+): void {
+  if (kind === 'thought') {
+    if (status !== undefined && !THOUGHT_STATUS.safeParse(status).success) {
+      ctx.addIssue({ code: 'custom', path: ['status'], message: 'thought status must be one of: open, validated, refuted' });
+    }
+    if (verdict !== undefined) ctx.addIssue({ code: 'custom', path: ['verdict'], message: 'verdict is not valid on a thought' });
+  } else if (kind === 'rule') {
+    if (status !== undefined && status !== 'proposed') {
+      ctx.addIssue({ code: 'custom', path: ['status'], message: 'a new rule must start proposed' });
+    }
+    if (verdict !== undefined) ctx.addIssue({ code: 'custom', path: ['verdict'], message: 'verdict is not valid on a rule' });
+  } else if (kind === 'conclusion') {
+    if (status !== undefined) ctx.addIssue({ code: 'custom', path: ['status'], message: 'status is not valid on a conclusion' });
+    if (!CONCLUSION_VERDICT.safeParse(verdict).success) {
+      ctx.addIssue({ code: 'custom', path: ['verdict'], message: 'conclusion requires verdict: good, bad, or mixed' });
+    }
+  } else if (kind === 'action') {
+    if (status !== undefined) ctx.addIssue({ code: 'custom', path: ['status'], message: 'status is not valid on an action' });
+    if (verdict !== undefined) ctx.addIssue({ code: 'custom', path: ['verdict'], message: 'verdict is not valid on an action' });
+  }
+}
+
+const logInput = z
+  .object({
+    kind: KIND.describe('thought = an idea/assumption. action = what was done in the real world (needs why). rule = a constraint (needs why). conclusion = a lesson (needs verdict).'),
+    title: z.string().min(1).max(160).describe('One imperative sentence, <=160 chars. Gets injected into other sessions verbatim -- write it to stand alone.'),
+    why: z
+      .string()
+      .max(4000)
+      .optional()
+      .describe(
+        "Required for action and rule. The reasoning, not a restatement of the title. Bad: 'Updated pricing'. Good: 'Yearly-first cut signups, see #19'.",
+      ),
+    status: z.string().optional().describe('thought: open|validated|refuted. rule: proposed only (a new rule must be proposed).'),
+    verdict: z.string().optional().describe('Required for conclusion: good | bad | mixed.'),
+    confidence: z.number().optional(),
+    project: z.string().optional().describe('Repo/product this belongs to. Omit for company-wide.'),
+    alternatives: z.array(z.string()).optional().describe('Rejected alternatives, for a decision action.'),
+    evidence: z.array(z.string()).optional(),
+    files: z.array(z.string()).optional().describe('Repo-relative paths the action touched. Enables file-touch advice on future edits.'),
+    guard: guardSchema.optional(),
+    links: z
+      .array(z.object({ type: z.string(), to: z.number().int() }).strict())
+      .optional()
+      .describe('Edges from this new node to existing #ids. An unlinked node is a broken brain -- add at least one.'),
+  })
+  .strict()
+  .superRefine((data, ctx) => checkStatusVerdictForKind(data.kind, data.status, data.verdict, ctx));
+const linkInput = z.object({ src: z.number().int(), type: z.string(), dst: z.number().int() }).strict();
 const updateInput = z
   .object({
     id: z.number().int(),
@@ -249,7 +305,7 @@ const updateInput = z
 const approveRuleInput = z.object({
   id: z.number().int(),
   approved_by: z.string().min(1),
-});
+}).strict();
 
 // ---- verb handlers ----
 
@@ -458,12 +514,36 @@ function link(args: z.infer<typeof linkInput>, who: Who) {
   return { ok: true as const, footer: footer(who, null) };
 }
 
+// update()'s per-kind status check: no `kind` in updateInput (it never changes), so this
+// reuses THOUGHT_STATUS against the node's existing kind rather than a zod object field.
+// action/conclusion never had a status; rule status is handled separately in update() (it is
+// refused unconditionally, not just for bad values, so it never reaches this function).
+function assertUpdateStatusForKind(kind: string, status: string | undefined): void {
+  if (status === undefined) return;
+  if (kind === 'thought') {
+    if (!THOUGHT_STATUS.safeParse(status).success) throw new Error('thought status must be one of: open, validated, refuted');
+    return;
+  }
+  if (kind === 'action') throw new Error('status is not valid on an action');
+  if (kind === 'conclusion') throw new Error('status is not valid on a conclusion');
+}
+
 function update(args: z.infer<typeof updateInput>, who: Who) {
   const existing = db.prepare('SELECT * FROM node WHERE id = ?').get(args.id) as any;
   if (!existing) throw new Error(`#${args.id} not found`);
   if (existing.valid_to !== null) throw new Error(`#${args.id} is retired/superseded and cannot change`);
-  if (existing.kind === 'rule' && args.status !== undefined) {
-    throw new Error('rule status can only change via approve_rule or supersedes; update() refuses it');
+  if (existing.kind === 'rule') {
+    if (existing.status === 'approved') {
+      const changingAnyField = [args.title, args.why, args.status, args.confidence, args.alternatives, args.evidence, args.files, args.project]
+        .some((v) => v !== undefined);
+      if (changingAnyField) {
+        throw new Error(`#${args.id} is an approved rule; update() refuses every field change on it -- propose a new rule that supersedes it`);
+      }
+    } else if (args.status !== undefined) {
+      throw new Error('rule status can only change via approve_rule or supersedes; update() refuses it');
+    }
+  } else {
+    assertUpdateStatusForKind(existing.kind, args.status);
   }
   const props = JSON.parse(existing.props);
   if (args.alternatives !== undefined) props.alternatives = args.alternatives;

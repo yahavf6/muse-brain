@@ -1,13 +1,13 @@
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { readFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, appendFileSync, statSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/server';
 import { NodeStreamableHTTPServerTransport, localhostHostValidation, localhostOriginValidation } from '@modelcontextprotocol/node';
 import { VERBS, callVerb, whoIs, getDb, getVersion, syncVersionFromDb, contextNodesEdges, rowToNode, buildFtsQuery } from './verbs.ts';
-import type { Who } from './verbs.ts';
+import type { Who, Guard } from './verbs.ts';
 import { judge, jevEnabled } from './judge.ts';
 import type { Question } from './judge.ts';
 import { backupDaily } from './db.ts';
@@ -24,11 +24,25 @@ const SERVER_LOG = join(LOG_DIR, 'server.log');
 const GUARD_LOG = join(LOG_DIR, 'guard.log');
 const PUBLIC_DIR = join(new URL('.', import.meta.url).pathname, '..', 'public');
 
+const MAX_LOG_BYTES = 5 * 1024 * 1024;
+// ponytail: single-file rotation (rename to .1, overwriting any previous one) -- no rotation
+// count/compression; add if 5MB-old-history ever turns out to matter for these logs.
+export function rotateIfNeeded(path: string): void {
+  try {
+    if (statSync(path).size > MAX_LOG_BYTES) renameSync(path, `${path}.1`);
+  } catch { /* file doesn't exist yet, nothing to rotate */ }
+}
 function serverLog(line: Record<string, unknown>): void {
-  try { appendFileSync(SERVER_LOG, `${JSON.stringify({ ts: new Date().toISOString(), ...line })}\n`); } catch { /* best effort */ }
+  try {
+    rotateIfNeeded(SERVER_LOG);
+    appendFileSync(SERVER_LOG, `${JSON.stringify({ ts: new Date().toISOString(), ...line })}\n`);
+  } catch { /* best effort */ }
 }
 function guardLog(line: Record<string, unknown>): void {
-  try { appendFileSync(GUARD_LOG, `${JSON.stringify(line)}\n`); } catch { /* best effort */ }
+  try {
+    rotateIfNeeded(GUARD_LOG);
+    appendFileSync(GUARD_LOG, `${JSON.stringify(line)}\n`);
+  } catch { /* best effort */ }
 }
 
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -204,10 +218,10 @@ export async function apiRecall(body: { prompt: string; project?: string }) {
   if (!ftsQ) return { hits: [] };
   const candidates = db
     .prepare(
-      `SELECT n.* FROM node_fts JOIN node n ON n.id = node_fts.rowid
+      `SELECT n.*, bm25(node_fts, 5, 2, 1) AS rank FROM node_fts JOIN node n ON n.id = node_fts.rowid
        WHERE node_fts MATCH :q AND n.valid_to IS NULL
          AND (:project IS NULL OR n.project = :project OR n.project IS NULL)
-       ORDER BY bm25(node_fts, 5, 2, 1) LIMIT 10`,
+       ORDER BY rank LIMIT 10`,
     )
     .all({ q: ftsQ, project: body.project ?? null }) as any[];
   if (candidates.length === 0) return { hits: [] };
@@ -230,9 +244,9 @@ export async function apiRecall(body: { prompt: string; project?: string }) {
       .slice(0, 3)
       .map((x) => x.c);
   } else {
-    // ponytail: FTS MATCH already filters to token-overlapping candidates; top 3 by rank
-    // stands in for a tuned bm25 cutoff -- add one if weak matches start slipping through.
-    picked = candidates.slice(0, 3);
+    // bm25 is negative; more negative = better. -4 cuts off weak/incidental token overlap
+    // (e.g. a single short-word match) that plain FTS MATCH lets through unranked.
+    picked = candidates.filter((c) => c.rank <= -4).slice(0, 3);
   }
   return { hits: picked.map((c) => ({ id: c.id, kind: c.kind, title: c.title, status: c.status, verdict: c.verdict, project: c.project, created_at: c.created_at })) };
 }
@@ -258,6 +272,34 @@ export async function apiPre(body: { tool_name: string; tool_input?: any; projec
   let reason: string | undefined;
 
   const guardsOff = process.env.BRAIN_GUARDS === 'off';
+
+  // Regex guards run first: cheap, deterministic, no Jev round trip. A match returns
+  // immediately -- semantic guards and advice never run once a regex guard has denied.
+  if (!guardsOff) {
+    const regexRules = db
+      .prepare(
+        `SELECT id, title, props FROM node
+         WHERE kind = 'rule' AND status = 'approved' AND valid_to IS NULL
+           AND (:project IS NULL OR project = :project OR project IS NULL)
+           AND json_extract(props, '$.guard.deny_if') IS NOT NULL`,
+      )
+      .all({ project: body.project ?? null }) as any[];
+    for (const r of regexRules) {
+      const guard = JSON.parse(r.props).guard as Guard;
+      let toolMatch = false;
+      try { toolMatch = new RegExp(guard.tool, 'i').test(body.tool_name); } catch { /* invalid regex: never matches */ }
+      if (!toolMatch) continue;
+      let denyMatch = false;
+      try { denyMatch = new RegExp(guard.deny_if!).test(JSON.stringify(body.tool_input ?? {})); } catch { /* invalid regex: never matches */ }
+      if (!denyMatch) continue;
+      guardLog({ ts: new Date().toISOString(), session_id: body.session_id, tool: body.tool_name, rule_id: r.id, title: r.title, mode: 'regex', decision: 'deny' });
+      return {
+        decision: 'deny' as const,
+        reason: `Blocked by brain rule #${r.id}: ${r.title}. Fix the input and retry. If the rule is wrong, tell the human; do not work around it.`,
+      };
+    }
+  }
+
   const jevGuardMode = process.env.BRAIN_JEV_GUARDS ?? 'shadow';
   if (!guardsOff && jevGuardMode !== 'off') {
     const rules = db

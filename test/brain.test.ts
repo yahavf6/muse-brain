@@ -1,16 +1,16 @@
 import { TEST_LOG_DIR } from './env.ts';
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import http from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
 import { openDb } from '../src/db.ts';
-import { setDb, getDb, callVerb } from '../src/verbs.ts';
+import { setDb, getDb, callVerb, buildFtsQuery, cleanSqliteError } from '../src/verbs.ts';
 import type { Who } from '../src/verbs.ts';
 import { judge } from '../src/judge.ts';
-import { apiPre, apiVersion, httpServer } from '../src/server.ts';
+import { apiPre, apiRecall, apiVersion, httpServer, rotateIfNeeded } from '../src/server.ts';
 
 const who: Who = { agent: 'test', scope: 'full' };
 const GUARD_LOG = join(TEST_LOG_DIR, 'guard.log');
@@ -99,6 +99,98 @@ test('update() refuses a retired/superseded node with a readable error', async (
     () => callVerb('update', { id: t.id, rev: 1, title: 'nope' }, who),
     /retired\/superseded/,
   );
+});
+
+// ---- input strictness: .strict() + per-kind status/verdict enums ----
+
+test('log() rejects an unrecognized field (.strict())', async () => {
+  await assert.rejects(
+    () => callVerb('log', { kind: 'thought', title: 'x', why: '', bogusField: 'y' }, who),
+    /bogusField|Unrecognized/,
+  );
+});
+
+test('update() rejects an unrecognized field (.strict())', async () => {
+  const t = (await callVerb('log', { kind: 'thought', title: 'Strict update target', why: '' }, who)) as any;
+  await assert.rejects(
+    () => callVerb('update', { id: t.id, rev: 1, bogusField: 'y' }, who),
+    /bogusField|Unrecognized/,
+  );
+});
+
+test('log(): thought with a bad status is rejected at the zod layer', async () => {
+  await assert.rejects(
+    () => callVerb('log', { kind: 'thought', title: 'x', why: '', status: 'approved' }, who),
+    /open, validated, refuted/,
+  );
+});
+
+test('log(): rule with a status other than proposed is rejected at the zod layer', async () => {
+  await assert.rejects(
+    () => callVerb('log', { kind: 'rule', title: 'x', why: 'y', status: 'approved' }, who),
+    /must start proposed/,
+  );
+});
+
+test('log(): conclusion without a verdict is rejected at the zod layer', async () => {
+  await assert.rejects(
+    () => callVerb('log', { kind: 'conclusion', title: 'x', why: 'y' }, who),
+    /good, bad, or mixed/,
+  );
+});
+
+test('log(): conclusion with a status set is rejected at the zod layer', async () => {
+  await assert.rejects(
+    () => callVerb('log', { kind: 'conclusion', title: 'x', why: 'y', verdict: 'good', status: 'open' }, who),
+    /status is not valid on a conclusion/,
+  );
+});
+
+test('log(): action with status or verdict set is rejected at the zod layer', async () => {
+  await assert.rejects(
+    () => callVerb('log', { kind: 'action', title: 'x', why: 'y', status: 'open' }, who),
+    /status is not valid on an action/,
+  );
+  await assert.rejects(
+    () => callVerb('log', { kind: 'action', title: 'x', why: 'y', verdict: 'good' }, who),
+    /verdict is not valid on an action/,
+  );
+});
+
+test('update(): thought status is validated against the same enum', async () => {
+  const t = (await callVerb('log', { kind: 'thought', title: 'Update status target', why: '' }, who)) as any;
+  await assert.rejects(
+    () => callVerb('update', { id: t.id, rev: 1, status: 'bogus' }, who),
+    /open, validated, refuted/,
+  );
+});
+
+test('update(): status is refused on an action or conclusion', async () => {
+  const a = (await callVerb('log', { kind: 'action', title: 'Update-status-on-action target', why: 'x' }, who)) as any;
+  await assert.rejects(
+    () => callVerb('update', { id: a.id, rev: 1, status: 'open' }, who),
+    /status is not valid on an action/,
+  );
+  const c = (await callVerb('log', { kind: 'conclusion', title: 'Update-status-on-conclusion target', why: 'x', verdict: 'good' }, who)) as any;
+  await assert.rejects(
+    () => callVerb('update', { id: c.id, rev: 1, status: 'open' }, who),
+    /status is not valid on a conclusion/,
+  );
+});
+
+test('update() refuses every field change on an approved rule', async () => {
+  const r = (await callVerb('log', { kind: 'rule', title: 'Frozen once approved', why: 'x' }, who)) as any;
+  await callVerb('approve_rule', { id: r.id, approved_by: 'Yahav' }, who);
+  await assert.rejects(
+    () => callVerb('update', { id: r.id, rev: 1, why: 'trying to sneak a change in' }, who),
+    /update\(\) refuses every field change/,
+  );
+});
+
+test('update() still allows editing a proposed (not yet approved) rule', async () => {
+  const r = (await callVerb('log', { kind: 'rule', title: 'Still proposed, editable', why: 'x' }, who)) as any;
+  const res = (await callVerb('update', { id: r.id, rev: 1, why: 'refined reasoning' }, who)) as any;
+  assert.equal(res.rev, 2);
 });
 
 test('search() with a query that yields zero FTS tokens falls back to a plain filter, not an FTS error', async () => {
@@ -203,6 +295,60 @@ test('footer: outcome gate appears for a 15-day-old action', async () => {
   assert.ok(res.footer.some((l: string) => l.includes(`#${a.id}`) && l.toLowerCase().includes('outcome')));
 });
 
+// ---- recall relevance (non-Jev path) ----
+
+test('buildFtsQuery drops stopwords and sub-3-char tokens', () => {
+  assert.equal(buildFtsQuery('help me fix the pricing page em dash issue please'), 'pricing* OR page* OR dash* OR issue*');
+});
+
+test('buildFtsQuery returns empty when nothing is left after filtering', () => {
+  assert.equal(buildFtsQuery('the a an it is'), '');
+  assert.equal(buildFtsQuery('is it ok'), ''); // all stopwords
+});
+
+async function seedRecallCorpus(): Promise<void> {
+  const nodes: Record<string, unknown>[] = [
+    { kind: 'rule', title: 'Never use em-dashes in copy or email', why: 'Em-dashes read as AI-generated; house style is em-dash-free everywhere, including the pricing page.' },
+    { kind: 'action', title: 'Removed em-dash from the pricing page copy', why: 'The pricing page headline used an em-dash; house style forbids em-dashes there.' },
+    { kind: 'action', title: 'Migrated the email queue to a new provider', why: 'The old provider had deliverability degradation.' },
+    { kind: 'thought', title: 'Users churn when onboarding takes too long', why: '' },
+    { kind: 'action', title: 'Refunded a customer within the policy window', why: 'Customer asked within 14 days, per refund policy.' },
+    { kind: 'conclusion', title: 'Short subject lines did not improve reply rate', why: 'A/B test showed no lift.', verdict: 'bad' },
+    { kind: 'rule', title: 'Brand font is Fraunces and Plus Jakarta Sans', why: 'Refreshed brand type pairing.' },
+    { kind: 'action', title: 'Deployed the new dashboard to production', why: 'Passed QA and staging checks.' },
+    { kind: 'thought', title: 'Cold outreach reply rates are seasonal', why: '' },
+    { kind: 'action', title: 'Rotated the Stripe webhook signing secret', why: 'Routine security rotation.' },
+  ];
+  for (const n of nodes) await callVerb('log', n, who);
+}
+
+test('/api/recall (Jev off): a pricing/em-dash prompt returns only the pricing/em-dash nodes', async () => {
+  await seedRecallCorpus();
+  const res = await apiRecall({ prompt: 'help me fix the pricing page em dash issue please' });
+  assert.equal(res.hits.length, 2);
+  for (const h of res.hits) assert.match(h.title, /em-dash|pricing/);
+});
+
+test('/api/recall (Jev off): "what time is it" returns nothing', async () => {
+  await seedRecallCorpus();
+  const res = await apiRecall({ prompt: 'what time is it' });
+  assert.deepEqual(res.hits, []);
+});
+
+// ---- SQLITE_MESSAGE_MAP belt-and-braces mappings ----
+
+test('cleanSqliteError maps the why CHECK constraint text', () => {
+  const e = cleanSqliteError(new Error("CHECK constraint failed: kind NOT IN ('action','rule') OR length(why) > 0"));
+  assert.match(e.message, /why is required/);
+});
+
+test('cleanSqliteError maps status/verdict CHECK constraint text', () => {
+  const statusErr = cleanSqliteError(new Error("CHECK constraint failed: kind <> 'thought' OR status IN ('open','validated','refuted')"));
+  assert.match(statusErr.message, /status or verdict/);
+  const verdictErr = cleanSqliteError(new Error("CHECK constraint failed: (kind = 'conclusion') = (verdict IS NOT NULL)"));
+  assert.match(verdictErr.message, /status or verdict/);
+});
+
 test('ask() with Jev off returns plain FTS order and jev:false', async () => {
   await callVerb('log', { kind: 'thought', title: 'Pricing toggle causes churn', why: '' }, who);
   await callVerb('log', { kind: 'action', title: 'Unrelated action about servers', why: 'x' }, who);
@@ -260,6 +406,39 @@ test('judge returns null when TYPESAFE_API_KEY is missing, and never calls fetch
   const result = await judge({}, {}, 1000);
   assert.equal(result, null);
   assert.equal((globalThis.fetch as any).mock.callCount(), 0);
+});
+
+// ---- /api/pre regex guards (server-side) ----
+
+async function makeApprovedRegexGuardRule(tool: string, denyIf: string): Promise<number> {
+  const r = (await callVerb('log', { kind: 'rule', title: `Regex guard rule ${Math.random()}`, why: 'x', guard: { tool, deny_if: denyIf } }, who)) as any;
+  await callVerb('approve_rule', { id: r.id, approved_by: 'Yahav' }, who);
+  return r.id;
+}
+
+test('/api/pre: a matching regex guard denies before any Jev call, and logs mode:regex', async () => {
+  const ruleId = await makeApprovedRegexGuardRule('send', 'em-dash');
+  const sessionId = `regex-deny-${Math.random()}`;
+  const result = await apiPre({ tool_name: 'send-message', tool_input: { text: 'has an em-dash in it' }, session_id: sessionId });
+  assert.equal(result.decision, 'deny');
+  assert.match(result.reason ?? '', new RegExp(`#${ruleId}`));
+  const mine = guardLogLinesFor(sessionId);
+  assert.equal(mine.length, 1);
+  assert.equal(mine[0].mode, 'regex');
+  assert.equal(mine[0].decision, 'deny');
+});
+
+test('/api/pre: a non-matching regex guard falls through to allow', async () => {
+  await makeApprovedRegexGuardRule('send', 'em-dash');
+  const result = await apiPre({ tool_name: 'send-message', tool_input: { text: 'clean text' }, session_id: `regex-clean-${Math.random()}` });
+  assert.equal(result.decision, 'allow');
+});
+
+test('/api/pre: BRAIN_GUARDS=off skips the regex guard too', async () => {
+  process.env.BRAIN_GUARDS = 'off';
+  await makeApprovedRegexGuardRule('send', 'em-dash');
+  const result = await apiPre({ tool_name: 'send-message', tool_input: { text: 'has an em-dash in it' }, session_id: `regex-off-${Math.random()}` });
+  assert.equal(result.decision, 'allow');
 });
 
 // ---- /api/pre guard bands ----
@@ -413,4 +592,31 @@ test('HTTP: a body over 1MB -> 413', async () => {
   } finally {
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
   }
+});
+
+// ---- log rotation ----
+
+test('log rotation: a file over 5MB is renamed to .1, overwriting any previous one', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'brain-logrotate-'));
+  const logPath = join(dir, 'server.log');
+  writeFileSync(logPath, 'x'.repeat(5 * 1024 * 1024 + 1));
+  writeFileSync(`${logPath}.1`, 'stale previous rotation');
+  rotateIfNeeded(logPath);
+  assert.ok(!existsSync(logPath));
+  assert.equal(readFileSync(`${logPath}.1`, 'utf8').length, 5 * 1024 * 1024 + 1);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('log rotation: a file under 5MB is left alone', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'brain-logrotate-'));
+  const logPath = join(dir, 'server.log');
+  writeFileSync(logPath, 'small');
+  rotateIfNeeded(logPath);
+  assert.ok(existsSync(logPath));
+  assert.ok(!existsSync(`${logPath}.1`));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('log rotation: a missing file is a silent no-op', () => {
+  assert.doesNotThrow(() => rotateIfNeeded(join(tmpdir(), 'brain-logrotate-does-not-exist', 'server.log')));
 });

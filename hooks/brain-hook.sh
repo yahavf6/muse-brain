@@ -9,6 +9,7 @@ MODE="${1:-}"
 SQLITE=/usr/bin/sqlite3; [ -x "$SQLITE" ] || SQLITE=sqlite3
 JQ=/usr/local/bin/jq; [ -x "$JQ" ] || JQ=jq
 CURL=/usr/bin/curl; [ -x "$CURL" ] || CURL=curl
+NODE_BIN=/Users/yahavfuchs/.nvm/versions/node/v24.11.1/bin/node; [ -x "$NODE_BIN" ] || NODE_BIN=node
 
 BRAIN_HOME="${HOME:-/tmp}"
 DB="${BRAIN_DB:-$BRAIN_HOME/.brain/brain.db}"
@@ -199,63 +200,70 @@ cmd_pre() {
   repo_root=$(get_repo_root "$cwd")
   session_id=$(safe_jq '.session_id' '')
 
+  # Server first: it runs regex guards, semantic guards AND advice in one round trip (~one
+  # curl, see docs/contracts.md). The local sqlite3+jq regex path below only runs as a
+  # fallback when the server itself is unreachable (curl failed, or came back empty) --
+  # never when it answered with something we just didn't like.
+  local payload response curl_rc decision reason2 context rc2
+  payload=$("$JQ" -cn --arg tool_name "$tool_name" --argjson tool_input "$tool_input_json" \
+    --arg project "$project" --arg repo_root "$repo_root" --arg session_id "$session_id" \
+    '{tool_name:$tool_name, tool_input:$tool_input, project:(if $project=="" then null else $project end), repo_root:$repo_root, session_id:$session_id}' 2>&1); rc2=$?
+  if [ $rc2 -ne 0 ]; then
+    log_error "pre: payload build failed: $payload"
+  else
+    response=$("$CURL" -s -m 2.5 -X POST "$SERVER_URL/api/pre" -H 'Content-Type: application/json' -d "$payload" 2>/dev/null)
+    curl_rc=$?
+    if [ $curl_rc -eq 0 ] && [ -n "$response" ]; then
+      decision=$(printf '%s' "$response" | "$JQ" -r '.decision // empty' 2>/dev/null)
+      if [ -n "$decision" ]; then
+        reason2=$(printf '%s' "$response" | "$JQ" -r '.reason // empty' 2>/dev/null)
+        context=$(printf '%s' "$response" | "$JQ" -r '.context // empty' 2>/dev/null)
+        case "$decision" in
+          deny|ask)
+            "$JQ" -cn --arg pd "$decision" --arg reason "$reason2" \
+              '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:$pd,permissionDecisionReason:$reason}}'
+            ;;
+          *)
+            if [ -n "$context" ]; then
+              "$JQ" -cn --arg ctx "$context" \
+                '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"allow",additionalContext:$ctx}}'
+            fi
+            ;;
+        esac
+        return 0
+      fi
+    fi
+  fi
+
+  # Server unreachable (or gave back nothing usable): local regex-only fallback. No advice,
+  # no semantic guards here -- those need the server.
   if ! guards_effectively_off && [ -f "$DB" ]; then
     where=$(sql_project_where project "$project")
     guard_query="select json_object('id',id,'title',title,'guard',json_extract(props,'\$.guard')) from node where kind='rule' and status='approved' and valid_to is null and json_extract(props,'\$.guard.deny_if') is not null and $where;"
     guard_rows=$("$SQLITE" -readonly "$DB" "$guard_query" 2>&1); rc=$?
     if [ $rc -ne 0 ]; then
       log_error "pre: guard query failed: $guard_rows"
-    else
-      while IFS= read -r row; do
-        [ -n "$row" ] || continue
-        g_id=$(printf '%s' "$row" | "$JQ" -r '.id // empty' 2>/dev/null)
-        g_title=$(printf '%s' "$row" | "$JQ" -r '.title // empty' 2>/dev/null)
-        g_tool=$(printf '%s' "$row" | "$JQ" -r '.guard.tool // empty' 2>/dev/null)
-        g_deny=$(printf '%s' "$row" | "$JQ" -r '.guard.deny_if // empty' 2>/dev/null)
-        [ -n "$g_tool" ] && [ -n "$g_deny" ] || continue
+      return 0
+    fi
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      g_id=$(printf '%s' "$row" | "$JQ" -r '.id // empty' 2>/dev/null)
+      g_title=$(printf '%s' "$row" | "$JQ" -r '.title // empty' 2>/dev/null)
+      g_tool=$(printf '%s' "$row" | "$JQ" -r '.guard.tool // empty' 2>/dev/null)
+      g_deny=$(printf '%s' "$row" | "$JQ" -r '.guard.deny_if // empty' 2>/dev/null)
+      [ -n "$g_tool" ] && [ -n "$g_deny" ] || continue
 
-        [ "$(regex_test "$tool_name" "$g_tool" 'i')" = "true" ] || continue
-        [ "$(regex_test "$tool_input_json" "$g_deny" 'i')" = "true" ] || continue
+      [ "$(regex_test "$tool_name" "$g_tool" 'i')" = "true" ] || continue
+      [ "$(regex_test "$tool_input_json" "$g_deny" 'i')" = "true" ] || continue
 
-        append_guard_log "$session_id" "$tool_name" "$g_id" "$g_title" "regex" "deny"
-        reason="Blocked by brain rule #${g_id}: ${g_title}. Fix the input and retry. If the rule is wrong, tell the human; do not work around it."
-        deny_json "$reason"
-        return 0
-      done <<EOF
+      append_guard_log "$session_id" "$tool_name" "$g_id" "$g_title" "regex" "deny"
+      reason="Blocked by brain rule #${g_id}: ${g_title}. Fix the input and retry. If the rule is wrong, tell the human; do not work around it."
+      deny_json "$reason"
+      return 0
+    done <<EOF
 $guard_rows
 EOF
-    fi
   fi
-
-  local payload response decision reason2 context rc2
-  payload=$("$JQ" -cn --arg tool_name "$tool_name" --argjson tool_input "$tool_input_json" \
-    --arg project "$project" --arg repo_root "$repo_root" --arg session_id "$session_id" \
-    '{tool_name:$tool_name, tool_input:$tool_input, project:(if $project=="" then null else $project end), repo_root:$repo_root, session_id:$session_id}' 2>&1); rc2=$?
-  if [ $rc2 -ne 0 ]; then
-    log_error "pre: payload build failed: $payload"
-    return 0
-  fi
-
-  response=$("$CURL" -s -m 2.5 -X POST "$SERVER_URL/api/pre" -H 'Content-Type: application/json' -d "$payload" 2>/dev/null)
-  [ -n "$response" ] || return 0
-
-  decision=$(printf '%s' "$response" | "$JQ" -r '.decision // empty' 2>/dev/null)
-  [ -n "$decision" ] || return 0
-  reason2=$(printf '%s' "$response" | "$JQ" -r '.reason // empty' 2>/dev/null)
-  context=$(printf '%s' "$response" | "$JQ" -r '.context // empty' 2>/dev/null)
-
-  case "$decision" in
-    deny|ask)
-      "$JQ" -cn --arg pd "$decision" --arg reason "$reason2" \
-        '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:$pd,permissionDecisionReason:$reason}}'
-      ;;
-    *)
-      if [ -n "$context" ]; then
-        "$JQ" -cn --arg ctx "$context" \
-          '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"allow",additionalContext:$ctx}}'
-      fi
-      ;;
-  esac
 }
 
 cmd_mark() {
@@ -391,6 +399,8 @@ SQL
   assert_not_contains "start omits proposed-only rule" "$out" "Proposed-only rule"
 
   # --- pre: em-dash send -> deny + guard.log line ---
+  # BRAIN_PORT=1 (a reserved port nothing listens on) makes the server call fail fast, so
+  # these exercise the LOCAL regex fallback path, not the server.
   out=$(BRAIN_DB="$db" HOME="$shome" BRAIN_PORT=1 bash "$self" pre <<'EOF'
 {"tool_name":"mcp__gmail__send_message","tool_input":{"body":"Hello — world"},"cwd":"/tmp","session_id":"st-emdash"}
 EOF
@@ -420,6 +430,44 @@ EOF
 EOF
 )
   assert_empty "pre: plain git push -> silent" "$out"
+
+  # --- pre: server reachable -> its decision is used, local regex path never runs ---
+  # A 10-line node http server that always answers {"decision":"deny","reason":"fake server deny"}.
+  # A clean (no em-dash) send would pass the local regex path, so a deny here proves the
+  # hook is mapping the SERVER's decision, not falling back to sqlite3+jq.
+  local fake_port_file fake_pid fake_port i
+  fake_port_file="$scratch/fake-port"
+  "$NODE_BIN" -e '
+const http = require("http");
+const srv = http.createServer((req, res) => {
+  let body = "";
+  req.on("data", (c) => { body += c; });
+  req.on("end", () => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ decision: "deny", reason: "fake server deny" }));
+  });
+});
+srv.listen(0, "127.0.0.1", () => { process.stdout.write(String(srv.address().port)); });
+' > "$fake_port_file" 2>/dev/null &
+  fake_pid=$!
+  fake_port=""
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    fake_port=$(cat "$fake_port_file" 2>/dev/null)
+    [ -n "$fake_port" ] && break
+    sleep 0.2
+  done
+  if [ -n "$fake_port" ]; then
+    out=$(BRAIN_DB="$db" HOME="$shome" BRAIN_PORT="$fake_port" bash "$self" pre <<'EOF'
+{"tool_name":"mcp__gmail__send_message","tool_input":{"body":"Hello world"},"cwd":"/tmp","session_id":"st-fakeserver"}
+EOF
+)
+    assert_contains "pre: fake server deny maps to permissionDecision deny" "$out" '"permissionDecision":"deny"'
+    assert_contains "pre: fake server reason is surfaced" "$out" "fake server deny"
+  else
+    st_fail "pre: fake node http server did not start"
+  fi
+  kill "$fake_pid" 2>/dev/null
+  wait "$fake_pid" 2>/dev/null
 
   # --- get_repo_root: git repo -> toplevel path; non-repo cwd -> empty ---
   local repo_dir rr
