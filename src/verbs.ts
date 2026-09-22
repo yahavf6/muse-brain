@@ -114,17 +114,21 @@ export function buildFtsQuery(q: string): string {
 }
 
 function footer(who: Who, project?: string | null): string[] {
+  // created_at < cutoff (string comparison on the ISO format every writer uses) instead of the
+  // old julianday(created_at) expression, so this can use the action_open partial index
+  // (schema.sql) instead of a full SCAN node on every log/ask/search/get/update call.
+  const cutoff = new Date(Date.now() - 14 * 864e5).toISOString();
   const rows = db
     .prepare(
       `SELECT id, CAST(julianday('now') - julianday(created_at) AS INTEGER) AS days
        FROM node
        WHERE kind = 'action' AND valid_to IS NULL
-         AND (julianday('now') - julianday(created_at)) > 14
-         AND NOT EXISTS (SELECT 1 FROM edge e WHERE e.dst = node.id AND e.type = 'evaluates')
+         AND created_at < ?
          AND (? IS NULL OR project = ?)
+         AND NOT EXISTS (SELECT 1 FROM edge e WHERE e.dst = node.id AND e.type = 'evaluates')
        ORDER BY created_at ASC LIMIT 3`,
     )
-    .all(project ?? null, project ?? null) as { id: number; days: number }[];
+    .all(cutoff, project ?? null, project ?? null) as { id: number; days: number }[];
   return rows.map((r) => `#${r.id} has waited ${r.days} days for an outcome. If you know it, log a conclusion that evaluates it.`);
 }
 

@@ -49,6 +49,9 @@ CREATE TABLE IF NOT EXISTS node_file (
 ) STRICT, WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS rule_live ON node(project) WHERE kind='rule' AND status='approved' AND valid_to IS NULL;
+-- footer()'s outcome-gate nudge (src/verbs.ts) filters open actions by created_at < cutoff;
+-- without this, that query does a full SCAN node on every log/ask/search/get/update call.
+CREATE INDEX IF NOT EXISTS action_open ON node(created_at) WHERE kind = 'action' AND valid_to IS NULL;
 
 CREATE VIRTUAL TABLE IF NOT EXISTS node_fts USING fts5(
   title, why, props,
