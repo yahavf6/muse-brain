@@ -27,7 +27,9 @@ export async function judge(
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) return null;
-    return await res.json();
+    // The body is { model, answers: {<id>: Answer}, usage }; callers only want the answers map.
+    const body = (await res.json()) as { answers?: Record<string, Answer> } | null;
+    return body?.answers ?? null;
   } catch {
     return null;
   }

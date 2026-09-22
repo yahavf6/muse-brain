@@ -541,6 +541,16 @@ test('judge returns null on 529', async (t) => {
   assert.equal(result, null);
 });
 
+test('judge unwraps the answers map from the API body', async (t) => {
+  process.env.TYPESAFE_API_KEY = 'k';
+  const body = { model: 'jev-1.13.0', answers: { a: { type: 'noul', noul: 0.95 } }, usage: { input_tokens: 1, output_tokens: 1 } };
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify(body), { status: 200 }));
+  const result = await judge({ q: 1 }, { a: { type: 'noul', instructions: 'x' } }, 1000);
+  assert.equal((result?.a as any)?.noul, 0.95);
+  t.mock.method(globalThis, 'fetch', async () => new Response('{}', { status: 200 }));
+  assert.equal(await judge({ q: 1 }, { a: { type: 'noul', instructions: 'x' } }, 1000), null);
+});
+
 test('judge returns null when TYPESAFE_API_KEY is missing, and never calls fetch', async (t) => {
   delete process.env.TYPESAFE_API_KEY;
   t.mock.method(globalThis, 'fetch', async () => new Response('{}', { status: 200 }));
@@ -594,7 +604,7 @@ test('/api/pre band: noul 0.9 -> deny', async (t) => {
   process.env.TYPESAFE_API_KEY = 'k';
   process.env.BRAIN_JEV_GUARDS = 'on';
   await makeApprovedGuardRule('does this violate the rule?');
-  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ r1: { type: 'noul', noul: 0.9 } }), { status: 200 }));
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ answers: { r1: { type: 'noul', noul: 0.9 } } }), { status: 200 }));
   const result = await apiPre({ tool_name: 'send-message', tool_input: { text: 'x' }, session_id: `s-${Math.random()}` });
   assert.equal(result.decision, 'deny');
 });
@@ -603,7 +613,7 @@ test('/api/pre band: noul 0.7 -> ask', async (t) => {
   process.env.TYPESAFE_API_KEY = 'k';
   process.env.BRAIN_JEV_GUARDS = 'on';
   await makeApprovedGuardRule('does this violate the rule?');
-  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ r1: { type: 'noul', noul: 0.7 } }), { status: 200 }));
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ answers: { r1: { type: 'noul', noul: 0.7 } } }), { status: 200 }));
   const result = await apiPre({ tool_name: 'send-message', tool_input: { text: 'x' }, session_id: `s-${Math.random()}` });
   assert.equal(result.decision, 'ask');
 });
@@ -612,7 +622,7 @@ test('/api/pre band: noul 0.2 -> allow', async (t) => {
   process.env.TYPESAFE_API_KEY = 'k';
   process.env.BRAIN_JEV_GUARDS = 'on';
   await makeApprovedGuardRule('does this violate the rule?');
-  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ r1: { type: 'noul', noul: 0.2 } }), { status: 200 }));
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ answers: { r1: { type: 'noul', noul: 0.2 } } }), { status: 200 }));
   const result = await apiPre({ tool_name: 'send-message', tool_input: { text: 'x' }, session_id: `s-${Math.random()}` });
   assert.equal(result.decision, 'allow');
 });
@@ -621,7 +631,7 @@ test('/api/pre shadow mode: high noul still allows, and logs a would_deny line',
   process.env.TYPESAFE_API_KEY = 'k';
   // BRAIN_JEV_GUARDS left unset -> defaults to shadow
   await makeApprovedGuardRule('does this violate the rule?');
-  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ r1: { type: 'noul', noul: 0.95 } }), { status: 200 }));
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ answers: { r1: { type: 'noul', noul: 0.95 } } }), { status: 200 }));
   const sessionId = `shadow-${Date.now()}-${Math.random()}`;
   const result = await apiPre({ tool_name: 'send-message', tool_input: { text: 'x' }, session_id: sessionId });
   assert.equal(result.decision, 'allow');
