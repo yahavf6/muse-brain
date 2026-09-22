@@ -8,8 +8,8 @@ Everything below is fixed so the server, the hooks and the UI can be built in pa
 - DB `~/.brain/brain.db` (override `BRAIN_DB`), WAL, `node:sqlite`. Port `4747` on `127.0.0.1` (override `BRAIN_PORT`). Env file `~/.brain/.env` loaded with `process.loadEnvFile` when present.
 - Env: `TYPESAFE_API_KEY` (absent = Jev off), `BRAIN_JEV=on|off` (default on when key present), `BRAIN_JEV_GUARDS=shadow|on|off` (default `shadow`), `BRAIN_GUARDS=on|off` (default on; hooks honor it, falling back to grepping `~/.brain/.env` when unset in their own environment -- that file is the single place to flip it), `BRAIN_LOG_DIR` (default `~/.brain/logs`), `JEV_MODEL=jev-1.13.0`.
 - Logs: `~/.brain/logs/server.log`, `~/.brain/logs/hook.log`, `~/.brain/logs/guard.log` (JSONL, see below) -- all under `BRAIN_LOG_DIR` when set.
-- Timestamps: every `created_at`, `valid_to` and `approved_on` is ISO-8601 UTC with a literal `Z` suffix and millisecond precision (`strftime('%Y-%m-%dT%H:%M:%fZ','now')` in SQL, `new Date().toISOString()` on the TS side). `julianday()` and its date-math comparisons (outcome gate, `/api/needs` staleness) accept this form directly (SQLite >= 3.42).
-- Dependencies: `@modelcontextprotocol/server@2.0.0`, `@modelcontextprotocol/node@2.0.0`, `zod@4.6.5`. Nothing else at runtime.
+- Timestamps: every `created_at`, `valid_to` and `approved_on` is ISO-8601 UTC with a literal `Z` suffix and millisecond precision (`strftime('%Y-%m-%dT%H:%M:%fZ','now')` in SQL, `new Date().toISOString()` on the TS side). The outcome gate and `/api/needs` compare `created_at` lexically against an ISO cutoff (`created_at < ?`), which relies on every writer using the same `YYYY-MM-DDTHH:MM:SS.sssZ` shape.
+- Dependencies: `@modelcontextprotocol/server@2.0.0`, `@modelcontextprotocol/node@2.0.0`, `zod@4.6.5` -- 3 direct dependencies (6 packages installed: plus `@modelcontextprotocol/core`, `hono`, `@hono/node-server`). Nothing else at runtime.
 
 ## Identity
 

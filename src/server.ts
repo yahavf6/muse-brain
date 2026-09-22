@@ -166,7 +166,7 @@ export function apiGraph(params: URLSearchParams) {
   const range = params.get('range') ?? '30d';
   const project = params.get('project');
   const limit = Number(params.get('limit') ?? 2000);
-  const cutoff = range === 'all' || !RANGE_MS[range] ? null : new Date(Date.now() - RANGE_MS[range]).toISOString().slice(0, 19).replace('T', ' ');
+  const cutoff = range === 'all' || !RANGE_MS[range] ? null : new Date(Date.now() - RANGE_MS[range]).toISOString();
   const rows = db
     .prepare(
       `SELECT * FROM node
@@ -203,17 +203,21 @@ export function apiNeeds(params: URLSearchParams) {
       )
       .all({ project: project ?? null }) as any[]
   ).map(rowToNode);
+  // created_at < :cutoff (string comparison on the ISO format every writer uses) instead of the
+  // old julianday(created_at) expression, so this can use the action_open partial index
+  // (schema.sql) instead of a full SCAN node -- same fix as footer() in verbs.ts.
+  const staleCutoff = new Date(Date.now() - 14 * 864e5).toISOString();
   const staleActions = (
     db
       .prepare(
         `SELECT *, CAST(julianday('now') - julianday(created_at) AS INTEGER) AS days FROM node
          WHERE kind = 'action' AND valid_to IS NULL
-           AND (julianday('now') - julianday(created_at)) > 14
+           AND created_at < :cutoff
            AND NOT EXISTS (SELECT 1 FROM edge e WHERE e.dst = node.id AND e.type = 'evaluates')
            AND (:project IS NULL OR project = :project OR project IS NULL)
          ORDER BY created_at ASC`,
       )
-      .all({ project: project ?? null }) as any[]
+      .all({ cutoff: staleCutoff, project: project ?? null }) as any[]
   ).map((r) => ({ ...rowToNode(r), days: r.days }));
   return { proposed_rules: proposedRules, stale_actions: staleActions, guard_events: readGuardLogTail(20) };
 }
@@ -321,7 +325,9 @@ export async function apiPre(body: { tool_name: string; tool_input?: any; projec
   }
 
   const jevGuardMode = process.env.BRAIN_JEV_GUARDS ?? 'shadow';
-  if (!guardsOff && jevGuardMode !== 'off') {
+  // judge() returns null outright when Jev is off, so the rules query + live filter below
+  // would just be discarded -- skip it (same wasted-work pattern as jevLinkSuggestions).
+  if (!guardsOff && jevGuardMode !== 'off' && jevEnabled()) {
     const rules = db
       .prepare(
         `SELECT id, title, why, props FROM node

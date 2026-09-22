@@ -36,34 +36,34 @@ const refund = await log(human, {
   kind: 'rule', title: 'Refund within 14 days, no questions asked',
   why: 'Keeps support load low and trust high; matches the stated policy.',
 });
-await approveIfNeeded(refund, 'demo');
+await approveIfNeeded(refund, 'jordan');
 
 const shipDateGuard = await log(human, {
   kind: 'rule', title: 'Outbound emails must not promise a specific ship date',
   why: 'A promised date turns into a support ticket the moment it slips; keep launch language vague until GA.',
   guard: { tool: '(send|reply|draft)', deny_if: '\\b(ship|launch)(ing)?\\s+(by|on)\\b' },
 });
-await approveIfNeeded(shipDateGuard, 'demo');
+await approveIfNeeded(shipDateGuard, 'jordan');
 
 // --- brand color rule superseded by a newly-approved one ---
 const brandOld = await log(human, { kind: 'rule', title: 'Primary brand color is Lumen Blue', why: 'Original brand color choice at launch.' });
-await approveIfNeeded(brandOld, 'demo');
+await approveIfNeeded(brandOld, 'jordan');
 const brandNew = await log(human, {
   kind: 'rule', title: 'Primary brand colors are Lumen Indigo and Lumen Amber',
   why: 'Refreshed palette replaces the single launch blue; amber carries CTAs.',
   links: [{ type: 'supersedes', to: brandOld }],
 });
-await approveIfNeeded(brandNew, 'demo');
+await approveIfNeeded(brandNew, 'jordan');
 
 // --- support SLA rule superseded by a newly-approved one ---
 const slaOld = await log(human, { kind: 'rule', title: 'Support inbox must be checked every 4 hours', why: 'Original SLA when the team was two people.' });
-await approveIfNeeded(slaOld, 'demo');
+await approveIfNeeded(slaOld, 'jordan');
 const slaNew = await log(human, {
   kind: 'rule', title: 'Support inbox must be checked within 1 hour during business hours',
   why: 'Team grew past two people; the 4-hour SLA was losing trial users to slow first response.',
   links: [{ type: 'supersedes', to: slaOld }],
 });
-await approveIfNeeded(slaNew, 'demo');
+await approveIfNeeded(slaNew, 'jordan');
 
 // --- pricing page: annual-default toggle ---
 const t1 = await log(claudeCode, { kind: 'thought', title: 'Defaulting the pricing toggle to monthly suppresses upgrade clicks', why: '', confidence: 0.65 });
@@ -85,7 +85,7 @@ const r1 = await log(claudeCode, {
   why: 'The annual-default change raised checkout value; new pricing surfaces should not default to monthly.',
   links: [{ type: 'derived_from', to: c1 }],
 });
-await approveIfNeeded(r1, 'demo');
+await approveIfNeeded(r1, 'jordan');
 await log(claudeCode, {
   kind: 'rule', title: 'Pricing experiments must run at least 2 full weeks before a verdict',
   why: "The annual-default read looked good within days, but weekend traffic skews it; a longer window avoids a false-good call.",
@@ -135,7 +135,7 @@ const r3 = await log(claudeCode, {
   why: 'Collapsing the wizard raised completion; new onboarding steps should not reintroduce a multi-step flow.',
   links: [{ type: 'derived_from', to: c3 }],
 });
-await approveIfNeeded(r3, 'demo');
+await approveIfNeeded(r3, 'jordan');
 await log(claudeCode, {
   kind: 'action', title: 'Added optional profile fields to the single-screen onboarding',
   why: 'Sales wanted company size captured at signup; kept it on the same screen to stay inside the one-screen rule.',
@@ -201,7 +201,7 @@ const r6 = await log(claudeCode, {
   why: 'The auto-reply helped, but a few customers replied asking when a real person would follow up; naming an ETA should close that gap.',
   links: [{ type: 'derived_from', to: c6 }],
 });
-await approveIfNeeded(r6, 'demo');
+await approveIfNeeded(r6, 'jordan');
 await log(claudeCode, {
   kind: 'action', title: 'Added an ETA line to the canned support auto-reply macro',
   why: "Directly closes the gap the auto-reply's own conclusion pointed at.",
@@ -249,7 +249,7 @@ const r8 = await log(claudeCode, {
   why: 'The downgrade rate bump in the first two weeks suggests some of those were impulse clicks a retention offer could catch.',
   links: [{ type: 'derived_from', to: c8 }],
 });
-await approveIfNeeded(r8, 'demo');
+await approveIfNeeded(r8, 'jordan');
 await log(claudeCode, {
   kind: 'action', title: 'Added a one-step retention offer to the self-serve downgrade flow',
   why: 'Directly implements the rule the downgrade conclusion led to.',
@@ -297,7 +297,7 @@ const r10 = await log(claudeCode, {
   why: 'The extension raised activation; shortening it back would undo that.',
   links: [{ type: 'derived_from', to: c10 }],
 });
-await approveIfNeeded(r10, 'demo');
+await approveIfNeeded(r10, 'jordan');
 await log(claudeCode, {
   kind: 'action', title: 'Applied the 14-day trial rule to the enterprise-lite plan',
   why: 'Enterprise-lite is priced and used like the team plan, so it should carry the same trial-length rule.',

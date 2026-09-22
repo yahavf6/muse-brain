@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { z, ZodError } from 'zod';
 import type { DatabaseSync } from 'node:sqlite';
 import { openDb } from './db.ts';
-import { judge } from './judge.ts';
+import { judge, jevEnabled } from './judge.ts';
 import type { Question } from './judge.ts';
 
 export type Who = { agent: string; scope: 'full' | 'admin' };
@@ -164,6 +164,7 @@ function intentBoost(intent: string, node: any): number {
 }
 
 async function jevLinkSuggestions(id: number, kind: string, title: string, why: string): Promise<string[]> {
+  if (!jevEnabled()) return []; // judge() would return null anyway -- skip the bm25 candidate query
   const ftsQ = buildFtsQuery(`${title} ${why}`);
   if (!ftsQ) return [];
   const candidates = db

@@ -2,7 +2,7 @@
 // per-size progress goes to stderr. Jev is forced off (dynamic import after env is set, per
 // test/env.ts's pattern) so numbers reflect the plain-FTS path, not a network round trip.
 import { mkdtempSync, rmSync, statSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, cpus, totalmem, platform, release } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
@@ -130,7 +130,17 @@ console.log(`Hook overhead (\`bash hooks/brain-hook.sh pre\`, 20 runs, ${serverU
 
 // ---- table: header printed now, then one row per size, flushed as each size finishes -- so a
 // kill partway through a slow size (e.g. 1,000,000) still leaves every completed row on disk.
-const header = '**Machine:** Apple M4 Pro, 48 GB, macOS 26.6.2, Node 24.11.1, 2026-09-22';
+function machineLine(): string {
+  const cpu = cpus()[0]?.model ?? 'unknown CPU';
+  const ramGb = Math.round(totalmem() / 2 ** 30);
+  let os = `${platform()} ${release()}`;
+  if (platform() === 'darwin') {
+    try { os = `macOS ${execFileSync('sw_vers', ['-productVersion'], { encoding: 'utf8' }).trim()}`; } catch { /* sw_vers unavailable, keep platform+release */ }
+  }
+  const date = new Date().toISOString().slice(0, 10);
+  return `**Machine:** ${cpu}, ${ramGb} GB, ${os}, Node ${process.versions.node}, ${date}, Jev: off`;
+}
+const header = machineLine();
 const cols = ['Size', 'log p50', 'log p95', 'writes/s', 'ask p50', 'ask p95', 'search p50', 'context p50', 'get p50', 'DB MB', 'cold open ms'];
 console.log(`\n${header}\n\n| ${cols.join(' | ')} |\n|${cols.map(() => '---').join('|')}|`);
 

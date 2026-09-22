@@ -1,3 +1,9 @@
 node_modules/
-.impeccable/review/
+.impeccable/
 *.log
+.DS_Store
+*.db
+*.db-wal
+*.db-shm
+*.bak-brain-*
+.env

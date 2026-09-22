@@ -30,6 +30,7 @@ components:
   chip-active: { backgroundColor: "rgba(255,255,255,.04)", textColor: "{colors.ink-1}", rounded: "{rounded.md}", padding: "4px 8px" }
   copy-btn: { backgroundColor: "transparent", textColor: "{colors.ink-2}", rounded: "{rounded.xs}", padding: "2px 6px" }
 ---
+<!-- Design-system tokens recorded from the built graph page on 2026-09-22. Companion to docs/design.md; kept as reference for anyone touching public/index.html. -->
 
 # Design System: Muse Brain
 

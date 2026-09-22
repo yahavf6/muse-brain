@@ -320,7 +320,7 @@ cmd_stop() {
   [ "$permission_mode" = "plan" ] && return 0
 
   cwd=$(safe_jq '.cwd' '')
-  brain_repo="$BRAIN_HOME/WebstormProjects/muse-brain"
+  brain_repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   case "$cwd" in
     "$brain_repo"|"$brain_repo"/*) return 0 ;;
   esac
