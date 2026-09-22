@@ -206,9 +206,19 @@ mem0, Zep and Graphiti, and the rest of the systems below are good, in several c
 
 ### Measured
 
-<!-- BENCH_TABLE -->
+Synthetic decision graphs written through the real `log` verb (zod validation, `BEGIN IMMEDIATE`, content hash, FTS triggers, edge triggers, reply footer), then 200 samples of each read verb. Latencies in milliseconds. Full notes in [`bench/results-2026-09-22.md`](bench/results-2026-09-22.md).
 
-Machine: Apple M4 Pro, 48 GB, macOS 26.6.2, Node 24.11.1. Reproduce with `npm run bench`.
+| Nodes | log p50 | log p95 | writes/s | ask p50 | ask p95 | search p50 | context p50 | get p50 | DB MB | cold open |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1,000 | 0.67 | 1.04 | 1,402 | 0.41 | 0.60 | 0.12 | 0.08 | 0.03 | 0.7 | 0.38 |
+| 10,000 | 2.74 | 5.76 | 347 | 1.04 | 2.77 | 0.65 | 0.09 | 0.03 | 6.4 | 0.39 |
+| 100,000 | 24.8 | 54.8 | 39 | 9.30 | 26.8 | 6.93 | 0.11 | 0.03 | 64.3 | 0.39 |
+
+Hook overhead (`PreToolUse` end to end, bash plus jq plus curl to the live server, 20 runs): p50 231 ms, p95 240 ms.
+
+Two things to read into this. `context` and `get` stay flat because they are index walks from a known id. `log` grows with size because every write also runs one FTS query for "possibly related" suggestions, and the synthetic corpus uses a small fixed word list, so far more rows match each term than in a real brain; the same query on organic text is much sparser. Writing the bench also caught a real bug: the outcome-gate footer used `julianday()` arithmetic that SQLite could not index, a full table scan on every call, now fixed with a partial index.
+
+Machine: Apple M4 Pro, 48 GB, macOS 26.6.2, Node 24.11.1, 2026-09-22. Reproduce with `npm run bench` (1k / 10k / 100k by default; 1M via `BENCH_SIZES`, expect hours).
 
 ### Why there is no LoCoMo score here
 
@@ -439,9 +449,9 @@ Not on the roadmap: an LLM in the write path.
 ## Development
 
 ```bash
-npm test                              # 90 tests, node:test, no framework
+npm test                              # 85 tests, node:test, no framework
 bash hooks/brain-hook.sh --selftest   # hook fixtures for every mode
-npm run bench                         # synthetic graphs through the real log() verb, 1k/10k/100k/1M nodes
+npm run bench                         # synthetic graphs through the real log() verb, 1k / 10k / 100k nodes (1M opt-in via BENCH_SIZES)
 ```
 
 ```
