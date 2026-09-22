@@ -95,7 +95,10 @@ END;
 -- rule -- including an admin's -- would hit this trigger too. The real job here is guarding the
 -- TRANSITION into 'approved' (via approve_rule, or a raw-SQL bypass of it); once a rule is
 -- already approved, admin field edits are update()'s job (src/verbs.ts) to allow or refuse.
-CREATE TRIGGER IF NOT EXISTS rule_approve_guard BEFORE UPDATE ON node WHEN NEW.kind = 'rule' AND NEW.status = 'approved' AND OLD.status IS NOT 'approved' BEGIN
+-- Dropped and recreated on every openDb(): CREATE TRIGGER IF NOT EXISTS would leave the old,
+-- broader definition in place on a DB created before this change.
+DROP TRIGGER IF EXISTS rule_approve_guard;
+CREATE TRIGGER rule_approve_guard BEFORE UPDATE ON node WHEN NEW.kind = 'rule' AND NEW.status = 'approved' AND OLD.status IS NOT 'approved' BEGIN
   SELECT RAISE(ABORT, 'approved rule needs approved_by')
   WHERE NEW.approved_by IS NULL OR trim(NEW.approved_by) = '';
   SELECT RAISE(ABORT, 'rule is not a proposed, current rule')

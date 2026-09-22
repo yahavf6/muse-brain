@@ -30,6 +30,20 @@ afterEach(() => {
   delete process.env.BRAIN_GUARDS;
 });
 
+test('openDb replaces an older rule_approve_guard definition left in an existing DB', () => {
+  const path = join(tmpDir, 'old.db');
+  openDb(path).close();
+  const old = new DatabaseSync(path);
+  old.exec(`DROP TRIGGER rule_approve_guard;
+    CREATE TRIGGER rule_approve_guard BEFORE UPDATE ON node WHEN NEW.kind = 'rule' AND NEW.status = 'approved' BEGIN
+      SELECT RAISE(ABORT, 'old'); END;`);
+  old.close();
+  const fresh = openDb(path);
+  const row = fresh.prepare("SELECT sql FROM sqlite_master WHERE name = 'rule_approve_guard'").get() as { sql: string };
+  fresh.close();
+  assert.match(row.sql, /OLD\.status IS NOT 'approved'/);
+});
+
 function guardLogLinesFor(sessionId: string): any[] {
   const lines = readFileSync(GUARD_LOG, 'utf8').split('\n').filter(Boolean);
   return lines.map((l) => JSON.parse(l)).filter((e) => e.session_id === sessionId);
