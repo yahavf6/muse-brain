@@ -1,12 +1,33 @@
 {
   "name": "muse-brain",
   "version": "1.0.0",
+  "description": "A brain for your agents, not a memory: a typed graph of thoughts, actions, rules and conclusions on SQLite, served over MCP to every coding agent on the machine.",
   "type": "module",
   "private": true,
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "homepage": "https://github.com/yahavf6/muse-brain#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yahavf6/muse-brain.git"
+  },
+  "keywords": [
+    "mcp",
+    "agent-memory",
+    "knowledge-graph",
+    "sqlite",
+    "claude-code",
+    "codex",
+    "cursor",
+    "decision-log"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "start": "node --no-warnings=ExperimentalWarning src/server.ts",
     "test": "node --no-warnings=ExperimentalWarning --test test/*.test.ts",
-    "seed": "node --no-warnings=ExperimentalWarning scripts/seed-demo.ts"
+    "seed": "node --no-warnings=ExperimentalWarning scripts/seed-demo.ts",
+    "bench": "node --no-warnings=ExperimentalWarning bench/run.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",

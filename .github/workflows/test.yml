@@ -1,0 +1,20 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: sudo apt-get update && sudo apt-get install -y jq sqlite3 curl
+      - run: npm ci
+      - run: npm test
+      - run: bash hooks/brain-hook.sh --selftest
