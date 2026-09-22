@@ -334,6 +334,7 @@ var lastWriteMs = null;
 var activityLines = [];
 
 /* ---------- shapes (canvas drawing reused/restyled from the earlier demo) ---------- */
+var TITLE_ZOOM = 2.2; /* passive title labels only kick in past this scale; hot/Present nodes bypass it */
 function isFaded(n){ return !!n.valid_to || n.status==='refuted' || n.status==='retired'; }
 function isHollow(n){ return n.status==='open' || n.status==='proposed'; }
 function isDashedProposed(n){ return n.kind==='rule' && n.status==='proposed'; }
@@ -395,9 +396,9 @@ function drawNode(n, ctx, scale){
   ctx.font = idFs+'px '+MONO; ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillStyle=T.ink3;
   ctx.fillText('#'+n.id, n.x, n.y+r*1.35+1.5);
 
-  /* title: only when hot (hover/selected/traced) or zoomed in past 1.6x; always in Present */
+  /* title: only when hot (hover/selected/traced) or zoomed in past TITLE_ZOOM; always in Present */
   var hot = n.id===state.hoverId || n.id===state.previewId || inChain(n.id);
-  if(state.present || hot || scale > 1.6){
+  if(state.present || hot || scale > TITLE_ZOOM){
     var t = n.title.length>44 ? n.title.slice(0,43)+'…' : n.title;
     var tf = Math.max(11/scale, 3.2);
     ctx.font = '500 '+tf+'px '+MONO;
