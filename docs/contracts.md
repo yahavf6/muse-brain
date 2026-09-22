@@ -4,7 +4,7 @@ Everything below is fixed so the server, the hooks and the UI can be built in pa
 
 ## Runtime
 
-- Node 24 (`/Users/yahavfuchs/.nvm/versions/node/v24.11.1/bin/node`), TypeScript run directly (`node src/server.ts`, type stripping, no build). ESM (`"type": "module"`), imports carry `.ts` extensions.
+- Node 24 on PATH, TypeScript run directly (`node src/server.ts`, type stripping, no build). ESM (`"type": "module"`), imports carry `.ts` extensions.
 - DB `~/.brain/brain.db` (override `BRAIN_DB`), WAL, `node:sqlite`. Port `4747` on `127.0.0.1` (override `BRAIN_PORT`). Env file `~/.brain/.env` loaded with `process.loadEnvFile` when present.
 - Env: `TYPESAFE_API_KEY` (absent = Jev off), `BRAIN_JEV=on|off` (default on when key present), `BRAIN_JEV_GUARDS=shadow|on|off` (default `shadow`), `BRAIN_GUARDS=on|off` (default on; hooks honor it, falling back to grepping `~/.brain/.env` when unset in their own environment -- that file is the single place to flip it), `BRAIN_LOG_DIR` (default `~/.brain/logs`), `JEV_MODEL=jev-1.13.0`.
 - Logs: `~/.brain/logs/server.log`, `~/.brain/logs/hook.log`, `~/.brain/logs/guard.log` (JSONL, see below) -- all under `BRAIN_LOG_DIR` when set.
@@ -57,7 +57,7 @@ Errors from handlers are thrown `Error(message)`; MCP returns them as `isError: 
 
 ## Hooks -> server
 
-`hooks/brain-hook.sh <mode>` reads the Claude Code hook JSON on stdin. Modes: `start` (SessionStart), `recall` (UserPromptSubmit), `pre` (PreToolUse), `mark` (PostToolUse), `stop` (Stop), `--selftest`. Everything fails open (exit 0, nothing on stdout) on any error, logging to `~/.brain/logs/hook.log`. `start` reads the DB with `/usr/bin/sqlite3 -readonly` so it works with the server down. `recall` and `pre` call the server first (`curl -s -m 1.5` / `-m 2.5`); `pre` only falls back to its own `sqlite3 -readonly` + `jq` regex-guard path (no semantic guards, no advice) when that call is unreachable -- curl exits non-zero or the response body is empty -- never merely because it doesn't like the server's answer. Project = basename of `git rev-parse --show-toplevel` from `cwd`, else null. Marker file: `${TMPDIR:-/tmp}/brain-nudge-<session_id>`.
+`hooks/brain-hook.sh <mode>` reads the Claude Code hook JSON on stdin. Modes: `start` (SessionStart), `recall` (UserPromptSubmit), `pre` (PreToolUse), `mark` (PostToolUse), `stop` (Stop), `--selftest`. Everything fails open (exit 0, nothing on stdout) on any error, logging to `~/.brain/logs/hook.log`. `start` reads the DB with `sqlite3 -readonly` so it works with the server down. `recall` and `pre` call the server first (`curl -s -m 1.5` / `-m 2.5`); `pre` only falls back to its own `sqlite3 -readonly` + `jq` regex-guard path (no semantic guards, no advice) when that call is unreachable -- curl exits non-zero or the response body is empty -- never merely because it doesn't like the server's answer. Project = basename of `git rev-parse --show-toplevel` from `cwd`, else null. Marker file: `${TMPDIR:-/tmp}/brain-nudge-<session_id>`.
 
 ## Seed
 

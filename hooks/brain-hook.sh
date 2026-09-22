@@ -6,10 +6,19 @@ set -u
 
 MODE="${1:-}"
 
-SQLITE=/usr/bin/sqlite3; [ -x "$SQLITE" ] || SQLITE=sqlite3
-JQ=/usr/local/bin/jq; [ -x "$JQ" ] || JQ=jq
-CURL=/usr/bin/curl; [ -x "$CURL" ] || CURL=curl
-NODE_BIN=/Users/yahavfuchs/.nvm/versions/node/v24.11.1/bin/node; [ -x "$NODE_BIN" ] || NODE_BIN=node
+SQLITE=$(command -v sqlite3 2>/dev/null) || SQLITE=sqlite3
+JQ=$(command -v jq 2>/dev/null) || JQ=jq
+CURL=$(command -v curl 2>/dev/null) || CURL=curl
+NODE_BIN=$(command -v node 2>/dev/null)
+if [ -z "$NODE_BIN" ]; then
+  # hooks may run with a minimal PATH under some launchers (no nvm on PATH); fall back to the
+  # newest nvm-installed node. ponytail: lexical glob order, correct while majors stay 2-digit
+  # (v10-v99); swap for `sort -V` if that stops holding.
+  for f in "$HOME"/.nvm/versions/node/v*/bin/node; do
+    [ -x "$f" ] && NODE_BIN="$f"
+  done
+fi
+[ -n "$NODE_BIN" ] || NODE_BIN=node
 
 BRAIN_HOME="${HOME:-/tmp}"
 DB="${BRAIN_DB:-$BRAIN_HOME/.brain/brain.db}"

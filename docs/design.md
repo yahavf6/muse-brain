@@ -1,3 +1,5 @@
+> Internal design note from 2026-09-22, kept as history. Paths, service names and the claude-mem teardown reflect the founder's machine at the time; the README is the current source of truth.
+
 # Muse Brain: the company brain. Thin custom typed graph on SQLite, local server with live graph view
 
 Naming: product and repo = **Muse Brain** (`muse-brain`, also the `package.json` name and the graph page title). The MCP server name stays `brain` (short tool names `mcp__brain__*`; the `mark` hook regex depends on it) and data stays in `~/.brain/`. Not related to Meta Muse, the V2 cloud agent; docs say "Meta Muse" in full wherever that product is meant.

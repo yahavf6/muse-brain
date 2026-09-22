@@ -646,14 +646,14 @@ test('/api/pre shadow mode: high noul still allows, and logs a would_deny line',
 test('/api/pre advice: repo_root strips to an exact repo-relative match', async () => {
   const a = (await callVerb(
     'log',
-    { kind: 'action', title: 'Touched the pricing page', why: 'x', project: 'reddgrow', files: ['apps/web/app/pricing/page.tsx'] },
+    { kind: 'action', title: 'Touched the pricing page', why: 'x', project: 'example-repo', files: ['apps/web/app/pricing/page.tsx'] },
     who,
   )) as any;
   const result = await apiPre({
     tool_name: 'Edit',
-    tool_input: { file_path: '/Users/yahavfuchs/WebstormProjects/reddgrow/apps/web/app/pricing/page.tsx' },
-    project: 'reddgrow',
-    repo_root: '/Users/yahavfuchs/WebstormProjects/reddgrow',
+    tool_input: { file_path: '/tmp/example-repo/apps/web/app/pricing/page.tsx' },
+    project: 'example-repo',
+    repo_root: '/tmp/example-repo',
     session_id: `pre-advice-${Math.random()}`,
   });
   assert.ok(result.context && result.context.includes(`#${a.id}`));
@@ -663,12 +663,12 @@ test('/api/pre advice: a same-suffix but different path is NOT matched (exact ma
   // A node touched the short path "app/pricing/page.tsx". The old suffix-LIKE query
   // ("fp LIKE '%' || nf.path") would false-positive-match a longer, unrelated path that
   // merely ENDS with the same suffix ("apps/web/app/pricing/page.tsx"). Exact match must not.
-  await callVerb('log', { kind: 'action', title: 'Touched a short-path page', why: 'x', project: 'reddgrow', files: ['app/pricing/page.tsx'] }, who);
+  await callVerb('log', { kind: 'action', title: 'Touched a short-path page', why: 'x', project: 'example-repo', files: ['app/pricing/page.tsx'] }, who);
   const result = await apiPre({
     tool_name: 'Edit',
-    tool_input: { file_path: '/Users/yahavfuchs/WebstormProjects/reddgrow/apps/web/app/pricing/page.tsx' },
-    project: 'reddgrow',
-    repo_root: '/Users/yahavfuchs/WebstormProjects/reddgrow',
+    tool_input: { file_path: '/tmp/example-repo/apps/web/app/pricing/page.tsx' },
+    project: 'example-repo',
+    repo_root: '/tmp/example-repo',
     session_id: `pre-advice-nomatch-${Math.random()}`,
   });
   assert.equal(result.context, undefined);
