@@ -109,6 +109,10 @@ Back up `~/.claude/settings.json` first (or use the `update-config` skill, which
 
 ## Wire up each client (MCP server, one-time)
 
+The same wiring below can be done from the graph page instead of by hand: `Connect agent` -> `Install`.
+It writes the same files this section describes, backing up any existing file first as `<file>.bak-brain-<YYYYMMDD-HHMMSS>`.
+An already-wired-up client is left untouched: no write, no backup.
+
 Server name must be `brain` (the hook's `mark` regex, `^mcp__brain__...`, depends on it). Each client gets `http://127.0.0.1:4747/mcp?agent=<name>`.
 
 **Claude Code:**

@@ -5,7 +5,7 @@ import { openDb } from './db.ts';
 import { judge } from './judge.ts';
 import type { Question } from './judge.ts';
 
-export type Who = { agent: string; scope: 'full' };
+export type Who = { agent: string; scope: 'full' | 'admin' };
 export type Guard = { tool: string; deny_if?: string; judge?: string };
 export type Node = {
   id: number; kind: string; title: string; why: string; project: string | null;
@@ -78,7 +78,6 @@ const SQLITE_MESSAGE_MAP: [RegExp, string][] = [
   [/approved rule needs approved_by/, 'approved rule needs approved_by'],
   [/rule is not a proposed, current rule/, 'rule is not a proposed, current rule'],
   [/supersedes needs an approved, current rule/, 'supersedes needs an approved, current rule'],
-  [/guard_frozen/, "an approved rule's guard cannot change; propose a new rule that supersedes it"],
   // Belt and braces: zod already rejects these (checkStatusVerdictForKind, log()/update()) before
   // a write reaches the DB, but the CHECK constraints stay on and get a readable message too.
   [/CHECK constraint failed:.*length\(why\)/, 'why is required for action and rule nodes'],
@@ -295,13 +294,17 @@ const updateInput = z
     title: z.string().min(1).max(160).optional(),
     why: z.string().max(4000).optional(),
     status: z.string().optional(),
+    verdict: z.string().optional().describe('Admin scope only. Conclusion only: good | bad | mixed.'),
     confidence: z.number().optional(),
     alternatives: z.array(z.string()).optional(),
     evidence: z.array(z.string()).optional(),
     files: z.array(z.string()).optional(),
+    guard: guardSchema.optional().describe('Admin scope only. Rule only.'),
     project: z.string().optional(),
   })
   .strict();
+const deleteNodeInput = z.object({ id: z.number().int() }).strict();
+const deleteEdgeInput = z.object({ src: z.number().int(), type: z.string(), dst: z.number().int() }).strict();
 const approveRuleInput = z.object({
   id: z.number().int(),
   approved_by: z.string().min(1),
@@ -439,19 +442,24 @@ function get(args: z.infer<typeof getInput>, who: Who) {
   return { nodes: result, footer: footer(who, null) };
 }
 
-async function log(args: z.infer<typeof logInput>, who: Who) {
-  const why = args.why ?? '';
-  if (args.guard) {
-    for (const [field, val] of [['tool', args.guard.tool], ['deny_if', args.guard.deny_if]] as const) {
-      if (val === undefined) continue;
-      if (val.length > 200) throw new Error(`guard.${field} must be <= 200 chars`);
-      try {
-        new RegExp(val);
-      } catch {
-        throw new Error(`guard.${field} is not a valid regex`);
-      }
+// Shared between log() (a rule's initial guard) and update() (an admin's guard edit): a
+// regex that fails to compile, or exceeds the length cap, is rejected before it ever reaches
+// a node's props.
+function validateGuardRegexes(guard: Guard): void {
+  for (const [field, val] of [['tool', guard.tool], ['deny_if', guard.deny_if]] as const) {
+    if (val === undefined) continue;
+    if (val.length > 200) throw new Error(`guard.${field} must be <= 200 chars`);
+    try {
+      new RegExp(val);
+    } catch {
+      throw new Error(`guard.${field} is not a valid regex`);
     }
   }
+}
+
+async function log(args: z.infer<typeof logInput>, who: Who) {
+  const why = args.why ?? '';
+  if (args.guard) validateGuardRegexes(args.guard);
   const hash = contentHash(args.kind, args.title, why);
   let status = args.status ?? null;
   if (status === null && args.kind === 'thought') status = 'open';
@@ -529,50 +537,120 @@ function assertUpdateStatusForKind(kind: string, status: string | undefined): vo
 }
 
 function update(args: z.infer<typeof updateInput>, who: Who) {
+  // Admin scope (the UI, always -- see apiCall) may edit a retired node, every field of an
+  // approved rule, and a rule's status/guard/verdict directly. Full scope (MCP agents) keeps
+  // the original refusals below.
+  const isAdmin = who.scope === 'admin';
   const existing = db.prepare('SELECT * FROM node WHERE id = ?').get(args.id) as any;
   if (!existing) throw new Error(`#${args.id} not found`);
-  if (existing.valid_to !== null) throw new Error(`#${args.id} is retired/superseded and cannot change`);
+  if (!isAdmin && existing.valid_to !== null) throw new Error(`#${args.id} is retired/superseded and cannot change`);
   if (existing.kind === 'rule') {
     if (existing.status === 'approved') {
-      const changingAnyField = [args.title, args.why, args.status, args.confidence, args.alternatives, args.evidence, args.files, args.project]
+      const changingAnyField = [args.title, args.why, args.status, args.confidence, args.alternatives, args.evidence, args.files, args.project, args.guard]
         .some((v) => v !== undefined);
-      if (changingAnyField) {
+      if (!isAdmin && changingAnyField) {
         throw new Error(`#${args.id} is an approved rule; update() refuses every field change on it -- propose a new rule that supersedes it`);
       }
-    } else if (args.status !== undefined) {
+    } else if (!isAdmin && args.status !== undefined) {
       throw new Error('rule status can only change via approve_rule or supersedes; update() refuses it');
     }
   } else {
     assertUpdateStatusForKind(existing.kind, args.status);
   }
+
+  if (args.verdict !== undefined) {
+    if (!isAdmin) throw new Error('verdict can only be set by an admin caller');
+    if (existing.kind !== 'conclusion') throw new Error('verdict is only valid on a conclusion');
+    if (!CONCLUSION_VERDICT.safeParse(args.verdict).success) throw new Error('verdict must be good, bad, or mixed');
+  }
+  if (args.guard !== undefined) {
+    if (!isAdmin) throw new Error('guard can only be set by an admin caller');
+    if (existing.kind !== 'rule') throw new Error('guard is only valid on a rule');
+    validateGuardRegexes(args.guard);
+  }
+
   const props = JSON.parse(existing.props);
   if (args.alternatives !== undefined) props.alternatives = args.alternatives;
   if (args.evidence !== undefined) props.evidence = args.evidence;
   if (args.files !== undefined) props.files = args.files;
+  if (args.guard !== undefined) props.guard = args.guard;
 
   const sets = ['props = :props', 'rev = rev + 1'];
   const params: Record<string, unknown> = { id: args.id, rev: args.rev, props: JSON.stringify(props) };
   if (args.title !== undefined) { sets.push('title = :title'); params.title = args.title; }
   if (args.why !== undefined) { sets.push('why = :why'); params.why = args.why; }
-  if (args.status !== undefined) { sets.push('status = :status'); params.status = args.status; }
   if (args.confidence !== undefined) { sets.push('confidence = :confidence'); params.confidence = args.confidence; }
   if (args.project !== undefined) { sets.push('project = :project'); params.project = args.project; }
+  if (args.verdict !== undefined) { sets.push('verdict = :verdict'); params.verdict = args.verdict; }
 
+  // A rule's status is otherwise refused by update() (see above) -- reaching here means either
+  // a non-rule kind (thought, validated against THOUGHT_STATUS by assertUpdateStatusForKind
+  // above) or an admin caller changing a rule's status directly.
+  if (isAdmin && existing.kind === 'rule' && args.status !== undefined) {
+    if (args.status === 'approved') throw new Error('use approve_rule');
+    if (args.status === 'retired') {
+      sets.push('status = :status', 'valid_to = :validTo');
+      params.status = args.status;
+      params.validTo = new Date().toISOString();
+    } else if (args.status === 'proposed') {
+      sets.push('status = :status', 'valid_to = NULL', 'approved_by = NULL', 'approved_on = NULL');
+      params.status = args.status;
+    } else {
+      throw new Error('rule status must be one of: proposed, approved, retired');
+    }
+  } else if (args.status !== undefined) {
+    sets.push('status = :status');
+    params.status = args.status;
+  }
+
+  // Full scope's WHERE keeps "AND valid_to IS NULL" (a retired node is not writable); admin
+  // drops it so a retired/superseded node can still be edited.
+  const validToClause = isAdmin ? '' : ' AND valid_to IS NULL';
   let changes: number;
   try {
-    const info = db.prepare(`UPDATE node SET ${sets.join(', ')} WHERE id = :id AND rev = :rev AND valid_to IS NULL`).run(params);
+    const info = db.prepare(`UPDATE node SET ${sets.join(', ')} WHERE id = :id AND rev = :rev${validToClause}`).run(params);
     changes = Number(info.changes);
   } catch (e) {
     throw cleanSqliteError(e);
   }
   if (changes === 0) {
     const now = db.prepare('SELECT rev, valid_to FROM node WHERE id = ?').get(args.id) as { rev: number; valid_to: string | null };
-    if (now.valid_to !== null) throw new Error(`#${args.id} is retired/superseded and cannot change`);
+    if (!isAdmin && now.valid_to !== null) throw new Error(`#${args.id} is retired/superseded and cannot change`);
     throw new Error(`conflict: #${args.id} is at rev ${now.rev}, you sent rev ${args.rev}. Read it again first`);
   }
   bumpVersion();
   const rev = (db.prepare('SELECT rev FROM node WHERE id = ?').get(args.id) as { rev: number }).rev;
   return { id: args.id, rev, footer: footer(who, args.project ?? existing.project ?? null) };
+}
+
+function deleteNode(args: z.infer<typeof deleteNodeInput>, who: Who) {
+  const existing = db.prepare('SELECT title FROM node WHERE id = ?').get(args.id) as { title: string } | undefined;
+  if (!existing) throw new Error(`#${args.id} not found`);
+  const edgeCount = (db.prepare('SELECT COUNT(*) AS c FROM edge WHERE src = ? OR dst = ?').get(args.id, args.id) as { c: number }).c;
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    db.prepare('DELETE FROM edge WHERE src = ? OR dst = ?').run(args.id, args.id);
+    db.prepare('DELETE FROM node_file WHERE node_id = ?').run(args.id);
+    db.prepare('DELETE FROM node WHERE id = ?').run(args.id);
+    db.exec('COMMIT');
+  } catch (e) {
+    try { db.exec('ROLLBACK'); } catch { /* nothing open */ }
+    throw cleanSqliteError(e);
+  }
+  bumpVersion();
+  return { id: args.id, title: existing.title, deleted: true as const, edges: edgeCount, footer: [] as string[] };
+}
+
+function deleteEdge(args: z.infer<typeof deleteEdgeInput>, who: Who) {
+  let changes: number;
+  try {
+    const info = db.prepare('DELETE FROM edge WHERE src = ? AND type = ? AND dst = ?').run(args.src, args.type, args.dst);
+    changes = Number(info.changes);
+  } catch (e) {
+    throw cleanSqliteError(e);
+  }
+  bumpVersion();
+  return { ok: true as const, deleted: changes, footer: [] as string[] };
 }
 
 function approveRule(args: z.infer<typeof approveRuleInput>, who: Who) {
@@ -597,6 +675,9 @@ export type Verb = {
   description: string;
   input: z.ZodTypeAny;
   handler: (args: any, who: Who) => unknown | Promise<unknown>;
+  // UI-only: never registered as an MCP tool (see the registration loop in server.ts), but
+  // still callable through POST /api/call, which always runs with scope 'admin'.
+  ui_only?: true;
 };
 
 export const VERBS: Verb[] = [
@@ -647,6 +728,20 @@ export const VERBS: Verb[] = [
     description: 'Call ONLY when the human has explicitly approved this specific rule in the current conversation. Never on your own judgment.',
     input: approveRuleInput,
     handler: approveRule,
+  },
+  {
+    name: 'delete_node',
+    description: 'UI-only. Permanently deletes a node, every edge touching it, and its node_file rows. Past side effects are not undone -- e.g. a rule that this node had retired via supersedes stays retired even after this node is gone.',
+    input: deleteNodeInput,
+    handler: deleteNode,
+    ui_only: true,
+  },
+  {
+    name: 'delete_edge',
+    description: "UI-only. Deletes one edge. Deleting a supports/refutes edge does not flip the thought's status back.",
+    input: deleteEdgeInput,
+    handler: deleteEdge,
+    ui_only: true,
   },
 ];
 

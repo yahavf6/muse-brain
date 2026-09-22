@@ -89,7 +89,13 @@ CREATE TRIGGER IF NOT EXISTS rule_starts_proposed BEFORE INSERT ON node WHEN NEW
   WHERE NEW.status IS NOT 'proposed';
 END;
 
-CREATE TRIGGER IF NOT EXISTS rule_approve_guard BEFORE UPDATE ON node WHEN NEW.kind = 'rule' AND NEW.status = 'approved' BEGIN
+-- Narrowed to OLD.status IS NOT 'approved': for an UPDATE that leaves an already-approved
+-- rule's status column untouched, NEW.status still reads back as 'approved' (an unset column
+-- carries its OLD value into NEW), so without this guard every plain field edit on an approved
+-- rule -- including an admin's -- would hit this trigger too. The real job here is guarding the
+-- TRANSITION into 'approved' (via approve_rule, or a raw-SQL bypass of it); once a rule is
+-- already approved, admin field edits are update()'s job (src/verbs.ts) to allow or refuse.
+CREATE TRIGGER IF NOT EXISTS rule_approve_guard BEFORE UPDATE ON node WHEN NEW.kind = 'rule' AND NEW.status = 'approved' AND OLD.status IS NOT 'approved' BEGIN
   SELECT RAISE(ABORT, 'approved rule needs approved_by')
   WHERE NEW.approved_by IS NULL OR trim(NEW.approved_by) = '';
   SELECT RAISE(ABORT, 'rule is not a proposed, current rule')
@@ -122,7 +128,9 @@ CREATE TRIGGER IF NOT EXISTS conclusion_resolves AFTER INSERT ON edge WHEN NEW.t
   WHERE id = NEW.dst AND kind = 'thought' AND valid_to IS NULL;
 END;
 
-CREATE TRIGGER IF NOT EXISTS guard_frozen BEFORE UPDATE ON node WHEN OLD.kind = 'rule' AND OLD.status = 'approved' BEGIN
-  SELECT RAISE(ABORT, 'guard_frozen: an approved rule guard cannot change')
-  WHERE json_extract(NEW.props, '$.guard') IS NOT json_extract(OLD.props, '$.guard');
-END;
+-- guard_frozen used to block any change to an approved rule's guard at the DB level for every
+-- caller. That invariant now lives in update() (src/verbs.ts): refused for scope 'full', but an
+-- admin caller (the UI, via POST /api/call) may edit a live guard, validated the same way log()
+-- validates a new one. This DROP also removes the trigger from the live DB, since schema.sql is
+-- re-applied on every openDb().
+DROP TRIGGER IF EXISTS guard_frozen;

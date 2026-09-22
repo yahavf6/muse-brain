@@ -11,6 +11,7 @@ import type { Who, Guard } from './verbs.ts';
 import { judge, jevEnabled } from './judge.ts';
 import type { Question } from './judge.ts';
 import { backupDaily } from './db.ts';
+import { installStatus, install, CLIENT_IDS } from './install.ts';
 
 const ENV_PATH = join(homedir(), '.brain', '.env');
 try {
@@ -23,6 +24,14 @@ mkdirSync(LOG_DIR, { recursive: true });
 const SERVER_LOG = join(LOG_DIR, 'server.log');
 const GUARD_LOG = join(LOG_DIR, 'guard.log');
 const PUBLIC_DIR = join(new URL('.', import.meta.url).pathname, '..', 'public');
+export const REPO_DIR = join(new URL('.', import.meta.url).pathname, '..');
+
+// Last time each `agent` (the ?agent= query param, via whoIs) hit /mcp. Used only for the
+// "who's connected" list on /api/version; not persisted, resets on restart.
+const seenAgents = new Map<string, number>();
+function installCtx() {
+  return { baseUrl: `http://127.0.0.1:${PORT}`, repoDir: REPO_DIR, home: homedir() };
+}
 
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 // ponytail: single-file rotation (rename to .1, overwriting any previous one) -- no rotation
@@ -100,6 +109,7 @@ const mcpServer = new McpServer(
   },
 );
 for (const verb of VERBS) {
+  if (verb.ui_only) continue; // UI-only verbs (delete_node, delete_edge) are POST /api/call only, never an MCP tool.
   mcpServer.registerTool(verb.name, { description: verb.description, inputSchema: verb.input }, async (args, ctx) => {
     const who = whoIs((ctx?.http?.req as { url?: string } | undefined) ?? {});
     try {
@@ -112,6 +122,7 @@ for (const verb of VERBS) {
 }
 
 async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  seenAgents.set(whoIs(req).agent, Date.now());
   const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   await mcpServer.connect(transport);
   await transport.handleRequest(req, res);
@@ -130,6 +141,8 @@ export function apiVersion() {
     agents,
     jev: jevEnabled() ? 'on' : 'off',
     guards: (process.env.BRAIN_GUARDS === 'off' ? 'off' : process.env.BRAIN_JEV_GUARDS ?? 'shadow'),
+    repo_dir: REPO_DIR,
+    seen: [...seenAgents.entries()].map(([agent, ts]) => ({ agent, last_seen: new Date(ts).toISOString() })),
   };
 }
 
@@ -208,8 +221,15 @@ export function apiNeeds(params: URLSearchParams) {
 // ---- /api/call, /api/recall, /api/pre ----
 
 export async function apiCall(body: any) {
-  const who: Who = { agent: body.agent ?? 'ui', scope: 'full' };
-  return callVerb(body.verb, body.args, who);
+  // Admin scope: the UI is a trusted local caller, so /api/call gets the edit/delete powers
+  // the MCP path (whoIs(req), always scope 'full') never has.
+  const who: Who = { agent: body.agent ?? 'ui', scope: 'admin' };
+  const result = await callVerb(body.verb, body.args, who);
+  if (body.verb === 'delete_node') {
+    const r = result as { id?: number; title?: string; deleted?: boolean };
+    if (r?.deleted) serverLog({ event: 'delete_node', line: `ui deleted #${r.id} "${r.title}"` });
+  }
+  return result;
 }
 
 export async function apiRecall(body: { prompt: string; project?: string }) {
@@ -387,6 +407,19 @@ export const httpServer = createServer(async (req, res) => {
     if (method === 'GET' && url.pathname === '/api/version') return sendJson(res, 200, apiVersion());
     if (method === 'GET' && url.pathname === '/api/graph') return sendJson(res, 200, apiGraph(url.searchParams));
     if (method === 'GET' && url.pathname === '/api/needs') return sendJson(res, 200, apiNeeds(url.searchParams));
+    if (method === 'GET' && url.pathname === '/api/install') return sendJson(res, 200, installStatus(installCtx()));
+    if (method === 'POST' && url.pathname === '/api/install') {
+      const body = await parseBody(req, res);
+      if (body === undefined) return;
+      if (!body || !(CLIENT_IDS as readonly string[]).includes(body.client)) return sendJson(res, 400, { error: 'unknown client' });
+      try {
+        const result = install(body.client, installCtx());
+        for (const path of result.changed) serverLog({ event: 'install', client: body.client, path });
+        return sendJson(res, 200, result);
+      } catch (e) {
+        return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+      }
+    }
     if (method === 'POST' && url.pathname === '/api/call') {
       const body = await parseBody(req, res);
       if (body === undefined) return;

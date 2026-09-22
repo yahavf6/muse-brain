@@ -7,12 +7,13 @@ import { join } from 'node:path';
 import http from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
 import { openDb } from '../src/db.ts';
-import { setDb, getDb, callVerb, buildFtsQuery, cleanSqliteError } from '../src/verbs.ts';
+import { setDb, getDb, callVerb, buildFtsQuery, cleanSqliteError, VERBS } from '../src/verbs.ts';
 import type { Who } from '../src/verbs.ts';
 import { judge } from '../src/judge.ts';
-import { apiPre, apiRecall, apiVersion, httpServer, rotateIfNeeded } from '../src/server.ts';
+import { apiCall, apiPre, apiRecall, apiVersion, httpServer, rotateIfNeeded } from '../src/server.ts';
 
 const who: Who = { agent: 'test', scope: 'full' };
+const admin: Who = { agent: 'ui', scope: 'admin' };
 const GUARD_LOG = join(TEST_LOG_DIR, 'guard.log');
 
 let tmpDir: string;
@@ -193,6 +194,105 @@ test('update() still allows editing a proposed (not yet approved) rule', async (
   assert.equal(res.rev, 2);
 });
 
+// ---- admin scope: update() ----
+
+test('update(): admin scope can edit an approved rule; scope full still refuses', async () => {
+  const r = (await callVerb('log', { kind: 'rule', title: 'Admin editable once approved', why: 'x' }, who)) as any;
+  await callVerb('approve_rule', { id: r.id, approved_by: 'Yahav' }, who); // rev 1 -> 2
+  await assert.rejects(
+    () => callVerb('update', { id: r.id, rev: 2, why: 'full cannot' }, who),
+    /update\(\) refuses every field change/,
+  );
+  const res = (await callVerb('update', { id: r.id, rev: 2, why: 'admin can' }, admin)) as any;
+  assert.equal(res.rev, 3);
+});
+
+test('update(): admin status retired sets valid_to; status proposed on that retired rule clears valid_to/approved_by/approved_on', async () => {
+  const r = (await callVerb('log', { kind: 'rule', title: 'Admin retire cycle', why: 'x' }, who)) as any;
+  await callVerb('approve_rule', { id: r.id, approved_by: 'Yahav' }, who); // rev 1 -> 2
+  const retired = (await callVerb('update', { id: r.id, rev: 2, status: 'retired' }, admin)) as any;
+  let row = getDb().prepare('SELECT status, valid_to FROM node WHERE id = ?').get(r.id) as any;
+  assert.equal(row.status, 'retired');
+  assert.notEqual(row.valid_to, null);
+  const proposed = (await callVerb('update', { id: r.id, rev: retired.rev, status: 'proposed' }, admin)) as any;
+  row = getDb().prepare('SELECT status, valid_to, approved_by, approved_on FROM node WHERE id = ?').get(r.id) as any;
+  assert.equal(row.status, 'proposed');
+  assert.equal(row.valid_to, null);
+  assert.equal(row.approved_by, null);
+  assert.equal(row.approved_on, null);
+  assert.equal(proposed.rev, 4);
+});
+
+test('update(): admin cannot fast-approve a rule via status -- must use approve_rule', async () => {
+  const r = (await callVerb('log', { kind: 'rule', title: 'Admin cannot fast-approve', why: 'x' }, who)) as any;
+  await assert.rejects(() => callVerb('update', { id: r.id, rev: 1, status: 'approved' }, admin), /use approve_rule/);
+});
+
+// ---- ui_only verbs: delete_node, delete_edge ----
+
+test('VERBS.filter(v => !v.ui_only) is exactly the 8 original verbs; both delete verbs are ui_only', () => {
+  const nonUi = VERBS.filter((v) => !v.ui_only).map((v) => v.name).sort();
+  assert.deepEqual(nonUi, ['approve_rule', 'ask', 'context', 'get', 'link', 'log', 'search', 'update'].sort());
+  assert.equal(VERBS.find((v) => v.name === 'delete_node')?.ui_only, true);
+  assert.equal(VERBS.find((v) => v.name === 'delete_edge')?.ui_only, true);
+});
+
+test('delete_node: removes its edges, node_file rows and node_fts row, and frees the content hash', async () => {
+  const t = (await callVerb('log', { kind: 'thought', title: 'Delete me thought', why: '' }, who)) as any;
+  const a = (await callVerb(
+    'log',
+    { kind: 'action', title: 'Delete me action', why: 'x', links: [{ type: 'motivated_by', to: t.id }], files: ['src/gone.ts'] },
+    who,
+  )) as any;
+  const res = (await callVerb('delete_node', { id: a.id }, admin)) as any;
+  assert.equal(res.deleted, true);
+  assert.equal(res.title, 'Delete me action');
+  assert.equal(res.edges, 1);
+  assert.deepEqual(res.footer, []);
+  assert.equal(getDb().prepare('SELECT COUNT(*) AS c FROM edge WHERE src = ? OR dst = ?').get(a.id, a.id).c, 0);
+  assert.equal(getDb().prepare('SELECT COUNT(*) AS c FROM node_file WHERE node_id = ?').get(a.id).c, 0);
+  assert.equal(getDb().prepare('SELECT COUNT(*) AS c FROM node_fts WHERE rowid = ?').get(a.id).c, 0);
+  const again = (await callVerb('log', { kind: 'action', title: 'Delete me action', why: 'x' }, who)) as any;
+  assert.equal(again.created, true);
+});
+
+test('delete_node: #id not found is a readable error', async () => {
+  await assert.rejects(() => callVerb('delete_node', { id: 999999 }, admin), /not found/);
+});
+
+test('delete_edge: returns deleted:1 then deleted:0 on the same edge', async () => {
+  const t = (await callVerb('log', { kind: 'thought', title: 'Edge delete thought', why: '' }, who)) as any;
+  const a = (await callVerb('log', { kind: 'action', title: 'Edge delete action', why: 'x', links: [{ type: 'motivated_by', to: t.id }] }, who)) as any;
+  const first = (await callVerb('delete_edge', { src: a.id, type: 'motivated_by', dst: t.id }, admin)) as any;
+  assert.equal(first.deleted, 1);
+  assert.deepEqual(first.footer, []);
+  const second = (await callVerb('delete_edge', { src: a.id, type: 'motivated_by', dst: t.id }, admin)) as any;
+  assert.equal(second.deleted, 0);
+});
+
+test('apiCall: delete_node runs with admin scope and logs one server-log line', async () => {
+  const t = (await callVerb('log', { kind: 'thought', title: 'Log line target', why: '' }, who)) as any;
+  const res = (await apiCall({ verb: 'delete_node', args: { id: t.id } })) as any;
+  assert.equal(res.deleted, true);
+  const entries = readFileSync(join(TEST_LOG_DIR, 'server.log'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  assert.ok(entries.some((e) => e.line === `ui deleted #${t.id} "Log line target"`));
+});
+
+test('HTTP: POST /api/call delete_node deletes a node (scope admin path)', async () => {
+  const t = (await callVerb('log', { kind: 'thought', title: 'HTTP delete target', why: '' }, who)) as any;
+  await new Promise<void>((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
+  try {
+    const port = (httpServer.address() as any).port;
+    const res = await rawPost(port, '/api/call', JSON.stringify({ verb: 'delete_node', args: { id: t.id } }));
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.deleted, true);
+    assert.equal(getDb().prepare('SELECT 1 FROM node WHERE id = ?').get(t.id), undefined);
+  } finally {
+    await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+  }
+});
+
 test('search() with a query that yields zero FTS tokens falls back to a plain filter, not an FTS error', async () => {
   await callVerb('log', { kind: 'action', title: 'Some action for the fallback test', why: 'x' }, who);
   const res = (await callVerb('search', { query: '???' }, who)) as any;
@@ -233,11 +333,24 @@ test('supersedes to a proposed (non-approved) rule is rejected', async () => {
   );
 });
 
-test('rule_approve_guard (DB level): approving a non-proposed rule is rejected', async () => {
-  const r = (await callVerb('log', { kind: 'rule', title: 'Already-approved rule for guard test', why: 'x' }, who)) as any;
-  await callVerb('approve_rule', { id: r.id, approved_by: 'Yahav' }, who);
+// Narrowed to OLD.status IS NOT 'approved' (see schema.sql): the trigger's job is guarding the
+// TRANSITION into 'approved', so it no longer fires on a no-op re-approve of an already-approved
+// rule (that would otherwise also block an admin's unrelated field edit on the same row, since an
+// UPDATE that doesn't touch status still carries the old 'approved' value into NEW.status). It
+// still blocks a raw-SQL resurrection of a retired rule, which is what this test now covers.
+test('rule_approve_guard (DB level): resurrecting a retired rule via raw SQL is rejected', async () => {
+  const r1 = (await callVerb('log', { kind: 'rule', title: 'Retired rule for guard test', why: 'x' }, who)) as any;
+  await callVerb('approve_rule', { id: r1.id, approved_by: 'Yahav' }, who);
+  const r2 = (await callVerb(
+    'log',
+    { kind: 'rule', title: 'Supersedes the retired rule for guard test', why: 'y', links: [{ type: 'supersedes', to: r1.id }] },
+    who,
+  )) as any;
+  await callVerb('approve_rule', { id: r2.id, approved_by: 'Yahav' }, who); // retires r1
+  const before = getDb().prepare('SELECT status FROM node WHERE id = ?').get(r1.id) as any;
+  assert.equal(before.status, 'retired');
   assert.throws(
-    () => getDb().prepare("UPDATE node SET status = 'approved', approved_by = 'Yahav' WHERE id = ?").run(r.id),
+    () => getDb().prepare("UPDATE node SET status = 'approved', approved_by = 'Yahav' WHERE id = ?").run(r1.id),
     /rule is not a proposed, current rule/,
   );
 });
@@ -273,12 +386,15 @@ test('invalid guard regex is rejected at log()', async () => {
   );
 });
 
-test('guard_frozen rejects changing a live guard', async () => {
+test('guard_frozen trigger removed: a raw UPDATE to props succeeds; update() with a guard on an approved rule still refuses scope full', async () => {
   const r = (await callVerb('log', { kind: 'rule', title: 'Guarded rule', why: 'x', guard: { tool: 'send', judge: 'bad?' } }, who)) as any;
   await callVerb('approve_rule', { id: r.id, approved_by: 'Yahav' }, who);
-  assert.throws(
-    () => getDb().prepare('UPDATE node SET props = ? WHERE id = ?').run(JSON.stringify({ guard: { tool: 'other' } }), r.id),
-    /guard_frozen/,
+  assert.doesNotThrow(() =>
+    getDb().prepare('UPDATE node SET props = ? WHERE id = ?').run(JSON.stringify({ guard: { tool: 'other' } }), r.id),
+  );
+  await assert.rejects(
+    () => callVerb('update', { id: r.id, rev: 1, guard: { tool: 'other' } }, who),
+    /update\(\) refuses every field change/,
   );
 });
 
