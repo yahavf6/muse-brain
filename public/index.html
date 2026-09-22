@@ -563,6 +563,10 @@ function refreshNodeStyles(){
 function disposeNodeObject(n){
   if(n.__mesh){ n.__mesh.geometry.dispose(); n.__mesh.material.dispose(); }
   if(n.__label && n.__label.material) n.__label.material.dispose();
+  var idPrefix = '#'+n.id, spacePrefix = idPrefix+' ', pipePrefix = idPrefix+'|';
+  textureCache.forEach(function(entry, key){
+    if(key.indexOf(spacePrefix)===0 || key.indexOf(pipePrefix)===0){ entry.tex.dispose(); textureCache.delete(key); }
+  });
 }
 
 /* ---------- light left-to-right time force (x-only) ---------- */
@@ -679,6 +683,8 @@ function refreshEmptyState(){
 function removeFromMaps(id){
   gNodes.delete(id);
   gLinks.forEach(function(l,k){ if(endId(l.source)===id || endId(l.target)===id) gLinks.delete(k); });
+  arrivals.delete(id);
+  flips.delete(id);
   if(Graph) Graph.graphData({ nodes: Array.from(gNodes.values()), links: Array.from(gLinks.values()) });
 }
 
@@ -881,7 +887,7 @@ async function addLinkUI(n, dir, type, targetRaw){
   var args = dir==='out' ? { src:n.id, type:type, dst:target } : { src:target, type:type, dst:n.id };
   try{ await callVerbUI('link', args); }
   catch(e){ box.textContent = e.message; box.classList.remove('hidden'); return; }
-  refreshSlice(); refreshNeeds();
+  refreshSlice();
   traceNode(n.id);
 }
 async function deleteNodeUI(id){
@@ -895,7 +901,7 @@ async function deleteNodeUI(id){
   disposeNodeObject(n);
   removeFromMaps(id);
   pushActivity('you', 'deleted #'+id, Date.now());
-  refreshSlice(); refreshNeeds();
+  refreshSlice();
 }
 $('#inspectorBody').addEventListener('click', async function(ev){
   var del = ev.target.closest('[data-del-edge]');
@@ -908,7 +914,7 @@ $('#inspectorBody').addEventListener('click', async function(ev){
     var rootId = state.trace ? state.trace.rootId : null;
     gLinks.delete(src+'|'+type+'|'+dst);
     if(Graph) Graph.graphData({ nodes:Array.from(gNodes.values()), links:Array.from(gLinks.values()) });
-    refreshSlice(); refreshNeeds();
+    refreshSlice();
     if(rootId!=null) traceNode(rootId);
     return;
   }
@@ -998,7 +1004,7 @@ async function saveEdit(id){
   try{ await callVerbUI('update', args); }
   catch(e){ showEditError(id, e.message, /^conflict:/.test(e.message)); return; }
   state.editing = null;
-  refreshSlice(); refreshNeeds();
+  refreshSlice();
   traceNode(id);
 }
 
@@ -1038,7 +1044,7 @@ async function approveRuleUI(id){
   }
   try{ await callVerbUI('approve_rule', { id:id, approved_by:approver }); }
   catch(e){ alert(e.message); return; }
-  refreshSlice(); refreshNeeds();
+  refreshSlice();
   if(state.trace && state.trace.rootId===id) traceNode(id);
 }
 async function rejectRuleUI(id){
@@ -1050,7 +1056,7 @@ async function rejectRuleUI(id){
   removeFromMaps(id);
   if(state.trace && state.trace.rootId===id) clearTrace();
   pushActivity('you', 'deleted #'+id, Date.now());
-  refreshSlice(); refreshNeeds();
+  refreshSlice();
 }
 $('#needsBody').addEventListener('click', async function(ev){
   var copyBtn = ev.target.closest('[data-copy]');

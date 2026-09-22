@@ -9,7 +9,7 @@ export type InstallCtx = { baseUrl: string; repoDir: string; home: string };
 type WriteOutcome =
   | { status: 'changed'; backupPath?: string }
   | { status: 'skipped' }
-  | { status: 'error'; error: string };
+  | { status: 'error'; error: string; backupPath?: string };
 
 type ClientFile = { path: string; checkInstalled: () => boolean; doWrite: () => WriteOutcome };
 type Client = { id: string; name: string; files: ClientFile[]; snippet: string; gets: string; restart: string };
@@ -33,10 +33,15 @@ function atomicWrite(path: string, content: string): void {
 
 // ---- JSON files: mcpServers.brain merged into an object, 2-space indent + trailing newline ----
 
+// A BOM-prefixed file (some editors write one) fails JSON.parse otherwise; strip it before
+// parsing, so the rewritten file also comes out BOM-free.
+function stripBom(text: string): string {
+  return text.replace(/^\uFEFF/, '');
+}
 function checkJson(path: string, isInstalled: (obj: any) => boolean): boolean {
   if (!existsSync(path)) return false;
   try {
-    return isInstalled(JSON.parse(readFileSync(path, 'utf8')));
+    return isInstalled(JSON.parse(stripBom(readFileSync(path, 'utf8'))));
   } catch {
     return false;
   }
@@ -47,7 +52,7 @@ function writeJson(path: string, isInstalled: (obj: any) => boolean, apply: (obj
   let obj: any = {};
   if (existed) {
     try {
-      obj = JSON.parse(readFileSync(path, 'utf8'));
+      obj = JSON.parse(stripBom(readFileSync(path, 'utf8')));
     } catch (e) {
       return { status: 'error', error: e instanceof Error ? e.message : String(e) };
     }
@@ -117,7 +122,11 @@ function writeSymlink(path: string, target: string): WriteOutcome {
       return { status: 'error', error: e instanceof Error ? e.message : String(e) };
     }
   }
-  symlinkSync(target, path);
+  try {
+    symlinkSync(target, path);
+  } catch (e) {
+    return { status: 'error', error: e instanceof Error ? e.message : String(e), backupPath: backup };
+  }
   return { status: 'changed', backupPath: backup };
 }
 
@@ -134,13 +143,16 @@ const HOOK_MODES: { event: string; mode: string; matcher?: string }[] = [
 
 function installedHookModes(obj: any): Set<string> {
   const found = new Set<string>();
+  const h = obj?.hooks;
+  const ok = h === undefined || h === null || (typeof h === 'object' && !Array.isArray(h));
+  if (!ok) return found;
   for (const { event, mode } of HOOK_MODES) {
-    const groups = obj?.hooks?.[event];
+    const groups = h?.[event];
     if (!Array.isArray(groups)) continue;
     for (const g of groups) {
       if (!Array.isArray(g?.hooks)) continue;
-      for (const h of g.hooks) {
-        if (typeof h?.command === 'string' && h.command.includes(`brain-hook.sh ${mode}`)) found.add(mode);
+      for (const hk of g.hooks) {
+        if (typeof hk?.command === 'string' && hk.command.includes(`brain-hook.sh ${mode}`)) found.add(mode);
       }
     }
   }
@@ -165,6 +177,9 @@ function writeClaudeHooks(path: string, repoDir: string): WriteOutcome {
       return { status: 'error', error: e instanceof Error ? e.message : String(e) };
     }
   }
+  const h = obj?.hooks;
+  const hooksOk = h === undefined || h === null || (typeof h === 'object' && !Array.isArray(h));
+  if (!hooksOk) return { status: 'error', error: `hooks is not an object in ${path}` };
   const found = installedHookModes(obj);
   const missing = HOOK_MODES.filter((m) => !found.has(m.mode));
   if (missing.length === 0) return { status: 'skipped' };
@@ -423,6 +438,7 @@ export function install(clientId: string, ctx: InstallCtx) {
       skipped.push(f.path);
     } else {
       errors.push({ path: f.path, error: result.error });
+      if (result.backupPath) backups.push(result.backupPath);
     }
   }
   return { client: clientId, changed, skipped, backups, errors };

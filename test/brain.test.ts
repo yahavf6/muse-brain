@@ -116,6 +116,17 @@ test('update() refuses a retired/superseded node with a readable error', async (
   );
 });
 
+test('update(): admin can edit a retired non-rule node and bumps rev; scope full still refuses', async () => {
+  const t = (await callVerb('log', { kind: 'thought', title: 'Retired thought, admin editable', why: '' }, who)) as any;
+  getDb().prepare("UPDATE node SET valid_to = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(t.id);
+  await assert.rejects(
+    () => callVerb('update', { id: t.id, rev: 1, why: 'full cannot' }, who),
+    /retired\/superseded/,
+  );
+  const res = (await callVerb('update', { id: t.id, rev: 1, why: 'admin can' }, admin)) as any;
+  assert.equal(res.rev, 2);
+});
+
 // ---- input strictness: .strict() + per-kind status/verdict enums ----
 
 test('log() rejects an unrecognized field (.strict())', async () => {

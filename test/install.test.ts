@@ -6,7 +6,7 @@
 import './env.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync, lstatSync, statSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync, lstatSync, statSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import http from 'node:http';
@@ -113,6 +113,23 @@ test('cursor: an unparsable mcp.json -> errors, and the file is left byte-identi
   rmSync(home, { recursive: true, force: true });
 });
 
+test('cursor: a BOM-prefixed mcp.json with another server installs cleanly and keeps that server', () => {
+  const home = tempHome();
+  const configPath = join(home, '.cursor', 'mcp.json');
+  mkdirSync(join(home, '.cursor'), { recursive: true });
+  writeFileSync(configPath, '﻿' + JSON.stringify({ mcpServers: { otherServer: { url: 'http://example.com' } } }, null, 2));
+
+  const result = install('cursor', ctxFor(home));
+  assert.equal(result.changed.length, 1);
+  assert.deepEqual(result.errors, []);
+  const rewritten = readFileSync(configPath, 'utf8');
+  assert.ok(!rewritten.startsWith('﻿'));
+  const written = JSON.parse(rewritten);
+  assert.equal(written.mcpServers.otherServer.url, 'http://example.com');
+  assert.equal(written.mcpServers.brain.url, 'http://127.0.0.1:4747/mcp?agent=cursor');
+  rmSync(home, { recursive: true, force: true });
+});
+
 test('codex: config.toml append is idempotent and preserves the existing text', () => {
   const home = tempHome();
   const configPath = join(home, '.codex', 'config.toml');
@@ -173,6 +190,39 @@ test('claude-code: the skill symlink is created once', () => {
   assert.ok(second.skipped.includes(skillPath));
   assert.ok(!second.changed.includes(skillPath));
   rmSync(home, { recursive: true, force: true });
+});
+
+function claudeCodeHooksGuardCase(hooksValue: unknown) {
+  const home = tempHome();
+  const settingsPath = join(home, '.claude', 'settings.json');
+  mkdirSync(join(home, '.claude'), { recursive: true });
+  const original = JSON.stringify({ hooks: hooksValue }, null, 2);
+  writeFileSync(settingsPath, original);
+  const ctx = ctxFor(home);
+
+  const result = install('claude-code', ctx);
+  assert.equal(result.errors.length, 1);
+  assert.equal(result.errors[0].path, settingsPath);
+  assert.match(result.errors[0].error, /hooks is not an object/);
+  assert.ok(!result.backups.some((b) => b.startsWith(`${settingsPath}.bak-brain-`)));
+  assert.deepEqual(readdirSync(join(home, '.claude')).sort(), ['settings.json', 'skills']);
+  assert.equal(readFileSync(settingsPath, 'utf8'), original);
+
+  const configPath = join(home, '.claude.json');
+  const skillPath = join(home, '.claude', 'skills', 'brain');
+  assert.ok(result.changed.includes(configPath));
+  assert.ok(result.changed.includes(skillPath));
+  assert.ok(existsSync(configPath));
+  assert.ok(lstatSync(skillPath).isSymbolicLink());
+  rmSync(home, { recursive: true, force: true });
+}
+
+test('claude-code: a top-level hooks: [] errors the settings file with no backup, byte-identical, other 2 files still install', () => {
+  claudeCodeHooksGuardCase([]);
+});
+
+test('claude-code: a top-level hooks: "text" errors the settings file with no backup, byte-identical, other 2 files still install', () => {
+  claudeCodeHooksGuardCase('text');
 });
 
 test('installStatus: an empty home reports installed:false for every real client, true after install', () => {
