@@ -9,9 +9,10 @@ import { dirname, join } from 'node:path';
 type TokenRow = { agent: string; scope: 'full'; created_at: string };
 type TokenFile = Record<string, TokenRow>;
 
-// Read live (not captured at import) so tests can toggle it.
+// Read live (not captured at import) so tests can toggle it. Exact '1', not truthy-any-string --
+// BRAIN_PUBLIC=0 or =false must stay off, not silently turn public mode on.
 export function isPublic(): boolean {
-  return !!process.env.BRAIN_PUBLIC;
+  return process.env.BRAIN_PUBLIC === '1';
 }
 
 function tokensPath(): string {
