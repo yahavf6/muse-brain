@@ -13,3 +13,7 @@ export const TEST_DB = join(testHome, 'brain.db');
 process.env.BRAIN_DB = TEST_DB;
 process.env.BRAIN_LOG_DIR = TEST_LOG_DIR;
 process.env.BRAIN_TOKENS_FILE = join(testHome, 'tokens.json');
+// server.ts loads ~/.brain/.env, which never overrides a key that is already set: pin these so a
+// developer's real .env cannot start a public listener or rebind anything under test.
+process.env.BRAIN_PUBLIC_PORT = '';
+process.env.BRAIN_HOST = '';

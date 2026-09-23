@@ -1,7 +1,17 @@
-// Operator CLI for BRAIN_PUBLIC bearer tokens. Needs no running server and works inside a slim
-// container (POST /api/token is loopback-only and needs curl). Honors BRAIN_TOKENS_FILE and BRAIN_DB
-// because it reuses src/tokens.ts and src/verbs.ts as they are.
-import { mintToken, listTokens, revokeToken } from '../src/tokens.ts';
+// Operator CLI for the public listener's bearer tokens (BRAIN_PUBLIC_PORT). Needs no running server
+// and works inside a slim container. Loads ~/.brain/.env first, the same guarded way src/server.ts
+// does, so a BRAIN_TOKENS_FILE/BRAIN_DB set only there is honored exactly as the server sees it; src/
+// modules are imported dynamically after that, since static imports would run before it.
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+const ENV_PATH = join(homedir(), '.brain', '.env');
+try {
+  if (existsSync(ENV_PATH)) process.loadEnvFile(ENV_PATH);
+} catch { /* unreadable env file: fall back to the process env */ }
+
+const { mintToken, listTokens, revokeToken } = await import('../src/tokens.ts');
 
 const [cmd, ...rest] = process.argv.slice(2);
 const readOnly = rest.includes('--read-only');

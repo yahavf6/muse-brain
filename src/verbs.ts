@@ -4,7 +4,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { openDb } from './db.ts';
 import { judge, jevEnabled } from './judge.ts';
 import type { Question } from './judge.ts';
-import { isPublic, verifyToken } from './tokens.ts';
+import { verifyToken } from './tokens.ts';
 
 // read/write/projects come from the agent_policy table (see whoIs); undefined = unrestricted.
 export type Who = { agent: string; scope: 'full' | 'admin'; read?: boolean; write?: boolean; projects?: string[] | null };
@@ -40,16 +40,16 @@ export function syncVersionFromDb(): void {
   }
 }
 
-// Thrown by whoIs() in BRAIN_PUBLIC mode on a missing/invalid bearer token; server.ts maps it to 401.
+// Thrown by whoIs() on the public listener for a missing/invalid bearer token; server.ts maps it to 401.
 export class AuthError extends Error {}
 
 type ReqHeaders = Record<string, string | string[] | undefined>;
 
-// BRAIN_PUBLIC unset: identity is the self-declared ?agent= (loopback only), headers ignored.
-// BRAIN_PUBLIC set: identity comes only from `Authorization: Bearer <token>` (?agent= ignored);
-// no/invalid token throws AuthError. Either way the agent_policy row then narrows it.
-export function whoIs(req: { url?: string; headers?: ReqHeaders }): Who {
-  if (isPublic()) {
+// Default (loopback listener): identity is the self-declared ?agent=, headers ignored.
+// { bearer: true } (public listener): identity comes only from `Authorization: Bearer <token>`
+// (?agent= ignored); no/invalid token throws AuthError. Either way the agent_policy row then narrows it.
+export function whoIs(req: { url?: string; headers?: ReqHeaders }, opts: { bearer?: boolean } = {}): Who {
+  if (opts.bearer) {
     const raw = req.headers?.authorization;
     const header = Array.isArray(raw) ? raw[0] : raw;
     const m = /^Bearer\s+(\S+)\s*$/i.exec(header ?? '');
@@ -830,8 +830,8 @@ export type Verb = {
   handler: (args: any, who: Who) => unknown | Promise<unknown>;
   // Which agent_policy toggle gates this verb in callVerb() (and which MCP tool set lists it).
   access: 'read' | 'write';
-  // UI-only: never registered as an MCP tool (see the registration loop in server.ts), but
-  // still callable through POST /api/call, which always runs with scope 'admin'.
+  // UI-only: callVerb() refuses it for any non-admin caller; reachable only through POST /api/call
+  // (always scope 'admin'). server.ts also leaves it out of MCP tools, REST routes and the OpenAPI doc.
   ui_only?: true;
 };
 
@@ -933,6 +933,8 @@ export function findVerb(name: string): Verb | undefined {
 export async function callVerb(name: string, rawArgs: unknown, who: Who): Promise<unknown> {
   const verb = findVerb(name);
   if (!verb) throw new Error(`unknown verb: ${name}`);
+  // ui_only verbs (delete, agent policy) are for the local UI (POST /api/call, scope 'admin') only.
+  if (verb.ui_only && who.scope !== 'admin') throw new Error(`${name} is UI-only`);
   // Admin (the UI, via apiCall) bypasses agent policy, same as every other full-only refusal:
   // dropping read/write/projects here makes every scope check below a no-op for it.
   if (who.scope === 'admin') who = { agent: who.agent, scope: 'admin' };

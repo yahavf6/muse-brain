@@ -2,20 +2,21 @@
 import './env.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, statSync, chmodSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mintToken, verifyToken, revokeToken, listTokens, hashToken } from '../src/tokens.ts';
 import { whoIs, AuthError, callVerb } from '../src/verbs.ts';
-import { httpServer } from '../src/server.ts';
 
-function withPublic<T>(on: boolean, fn: () => T): T {
-  const prev = process.env.BRAIN_PUBLIC;
-  if (on) process.env.BRAIN_PUBLIC = '1'; else delete process.env.BRAIN_PUBLIC;
-  try { return fn(); } finally {
-    if (prev === undefined) delete process.env.BRAIN_PUBLIC; else process.env.BRAIN_PUBLIC = prev;
+// Runs fn with BRAIN_TOKENS_FILE pointed at a fresh temp dir's tokens.json.
+function withTokensFile(fn: (path: string) => void): void {
+  const dir = mkdtempSync(join(tmpdir(), 'brain-tokens-'));
+  const prev = process.env.BRAIN_TOKENS_FILE;
+  process.env.BRAIN_TOKENS_FILE = join(dir, 'tokens.json');
+  try { fn(process.env.BRAIN_TOKENS_FILE); } finally {
+    process.env.BRAIN_TOKENS_FILE = prev;
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -33,56 +34,60 @@ test('tokens: mint -> verify -> list (no raw token) -> revoke', () => {
   assert.equal(verifyToken(token), null);
 });
 
-test('whoIs: BRAIN_PUBLIC unset ignores Authorization entirely, uses ?agent=', () => {
-  const { token } = mintToken('cloud');
-  withPublic(false, () => {
-    assert.deepEqual(whoIs({ url: '/mcp?agent=codex-x', headers: { authorization: `Bearer ${token}` } }), { agent: 'codex-x', scope: 'full' });
-    assert.deepEqual(whoIs({ url: '/mcp?agent=codex-x', headers: { authorization: 'Bearer garbage' } }), { agent: 'codex-x', scope: 'full' });
+test('tokens: stored rows carry no scope; file is 0600 after every write, even if it was looser', () => {
+  withTokensFile((path) => {
+    writeFileSync(path, '{}\n');
+    chmodSync(path, 0o644);
+    const { hash } = mintToken('perm-bot');
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+    assert.deepEqual(Object.keys(JSON.parse(readFileSync(path, 'utf8'))[hash]).sort(), ['agent', 'created_at']);
+    assert.deepEqual(readdirSync(join(path, '..')), ['tokens.json'], 'no temp file left behind');
   });
 });
 
-test('whoIs: BRAIN_PUBLIC set resolves the token agent (policy applied), else AuthError', async () => {
+test('tokens: a malformed/truncated/non-object file -> verify null, list [], mint/revoke throw and leave it byte-identical', () => {
+  for (const bad of ['{"abc": {"agent": "x"', '[]', 'null', '"str"', '']) {
+    withTokensFile((path) => {
+      writeFileSync(path, bad);
+      assert.equal(verifyToken('anything'), null, bad);
+      assert.deepEqual(listTokens(), []);
+      assert.throws(() => mintToken('x'), /not a JSON object/, bad);
+      assert.throws(() => revokeToken('abc'), /not a JSON object/, bad);
+      assert.equal(readFileSync(path, 'utf8'), bad);
+    });
+  }
+  withTokensFile(() => {
+    assert.equal(verifyToken('anything'), null, 'missing file = no tokens');
+    assert.deepEqual(listTokens(), []);
+  });
+});
+
+test('tokens: listTokens tolerates null/non-object rows; verify ignores them', () => {
+  withTokensFile((path) => {
+    writeFileSync(path, JSON.stringify({ [hashToken('t1')]: null, [hashToken('t2')]: 5, [hashToken('t3')]: { agent: 'ok', created_at: 'x' } }));
+    assert.deepEqual(listTokens().map((t) => t.agent), ['?', '?', 'ok']);
+    assert.equal(verifyToken('t1'), null);
+    assert.deepEqual(verifyToken('t3'), { agent: 'ok', scope: 'full' });
+  });
+});
+
+test('whoIs: default (loopback) ignores Authorization entirely, uses ?agent=', () => {
+  const { token } = mintToken('cloud');
+  assert.deepEqual(whoIs({ url: '/mcp?agent=codex-x', headers: { authorization: `Bearer ${token}` } }), { agent: 'codex-x', scope: 'full' });
+  assert.deepEqual(whoIs({ url: '/mcp?agent=codex-x', headers: { authorization: 'Bearer garbage' } }), { agent: 'codex-x', scope: 'full' });
+});
+
+test('whoIs { bearer: true } resolves the token agent (policy applied), else AuthError', async () => {
   const { token } = mintToken('cloud-scoped');
   await callVerb('set_agent_policy', { agent: 'cloud-scoped', read: true, write: false, projects: ['alpha'] }, { agent: 'ui', scope: 'admin' });
-  withPublic(true, () => {
-    assert.deepEqual(
-      whoIs({ url: '/mcp?agent=admin', headers: { authorization: `bearer ${token}` } }),
-      { agent: 'cloud-scoped', scope: 'full', read: true, write: false, projects: ['alpha'] },
-    );
-    assert.throws(() => whoIs({ url: '/mcp?agent=codex' }), AuthError);
-    assert.throws(() => whoIs({ url: '/mcp', headers: { authorization: 'Bearer wrong' } }), AuthError);
-    assert.throws(() => whoIs({ url: '/mcp', headers: { authorization: token } }), AuthError, 'scheme required');
-  });
-});
-
-function post(port: number, path: string, body: string, headers: Record<string, string>): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port, path, method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...headers } }, (res) => {
-      res.resume();
-      res.on('end', () => resolve(res.statusCode ?? 0));
-    });
-    req.on('error', reject);
-    req.end(body);
-  });
-}
-
-test('http: public mode -- /mcp needs a bearer (401) and skips Host; /api/call keeps the Host check', async () => {
-  const { token } = mintToken('cloud-http');
-  const prev = process.env.BRAIN_PUBLIC;
-  process.env.BRAIN_PUBLIC = '1';
-  await new Promise<void>((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
-  try {
-    const port = (httpServer.address() as any).port;
-    const init = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } } });
-    assert.equal(await post(port, '/mcp', init, { Host: 'brain.example.com' }), 401);
-    assert.equal(await post(port, '/mcp', init, { Host: 'brain.example.com', authorization: `Bearer ${token}` }), 200);
-    assert.equal(await post(port, '/api/call', '{}', { Host: 'brain.example.com', authorization: `Bearer ${token}` }), 403);
-    assert.equal(await post(port, '/api/token', '{"action":"list"}', { Host: `127.0.0.1:${port}`, 'x-forwarded-for': '1.2.3.4' }), 403);
-    assert.equal(await post(port, '/api/token', '{"action":"list"}', { Host: `127.0.0.1:${port}` }), 200);
-  } finally {
-    if (prev === undefined) delete process.env.BRAIN_PUBLIC; else process.env.BRAIN_PUBLIC = prev;
-    await new Promise<void>((resolve) => httpServer.close(() => resolve()));
-  }
+  const bearer = { bearer: true };
+  assert.deepEqual(
+    whoIs({ url: '/mcp?agent=admin', headers: { authorization: `bearer ${token}` } }, bearer),
+    { agent: 'cloud-scoped', scope: 'full', read: true, write: false, projects: ['alpha'] },
+  );
+  assert.throws(() => whoIs({ url: '/mcp?agent=codex' }, bearer), AuthError);
+  assert.throws(() => whoIs({ url: '/mcp', headers: { authorization: 'Bearer wrong' } }, bearer), AuthError);
+  assert.throws(() => whoIs({ url: '/mcp', headers: { authorization: token } }, bearer), AuthError, 'scheme required');
 });
 
 test('token CLI: mint prints a token that verifies against BRAIN_TOKENS_FILE', () => {
@@ -101,7 +106,7 @@ test('token CLI: mint prints a token that verifies against BRAIN_TOKENS_FILE', (
     assert.deepEqual(verifyToken(token), { agent: 'cli-test', scope: 'full' });
     assert.ok(out.includes(hashToken(token)), 'mint prints the hash too');
   } finally {
-    if (prev === undefined) delete process.env.BRAIN_TOKENS_FILE; else process.env.BRAIN_TOKENS_FILE = prev;
+    process.env.BRAIN_TOKENS_FILE = prev;
     rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -13,7 +13,6 @@ import { judge, jevEnabled } from './judge.ts';
 import type { Question } from './judge.ts';
 import { backupDaily } from './db.ts';
 import { installStatus, install, CLIENT_IDS } from './install.ts';
-import { isPublic, mintToken, revokeToken, listTokens, hashToken } from './tokens.ts';
 
 const ENV_PATH = join(homedir(), '.brain', '.env');
 try {
@@ -100,8 +99,6 @@ async function parseBody(req: IncomingMessage, res: ServerResponse): Promise<any
 
 // ---- MCP ----
 
-// One server per (read, write) policy combination, built on first use: MCP tool registration is
-// up front, so an agent's tool list has to be picked before its request is handled.
 function mcpInstructions(read: boolean, write: boolean): string {
   const parts: string[] = [];
   if (!read && !write) parts.push('This agent has no access to the brain; the human can change this in Connect agent.');
@@ -118,21 +115,20 @@ function mcpInstructions(read: boolean, write: boolean): string {
   return parts.join(' ');
 }
 
-const mcpServers = new Map<string, McpServer>();
-function mcpServerFor(read: boolean, write: boolean): McpServer {
-  const key = `${read ? 1 : 0}${write ? 1 : 0}`;
-  let s = mcpServers.get(key);
-  if (s) return s;
-  s = new McpServer({ name: 'brain', version: '1.0.0' }, { instructions: mcpInstructions(read, write) });
+// A fresh McpServer per request (stateless transport): Protocol.connect() binds one transport per
+// server, so a shared server would answer one request on another's connection. Registering the
+// handful of tools is cheap. Only the tools this caller's policy allows are listed, and every tool
+// runs as the `who` the request handler already resolved -- callVerb() still enforces the policy.
+function mcpServerFor(who: Who): McpServer {
+  const read = who.read ?? true;
+  const write = who.write ?? true;
+  const s = new McpServer({ name: 'brain', version: '1.0.0' }, { instructions: mcpInstructions(read, write) });
   for (const verb of VERBS) {
     if (verb.ui_only) continue; // UI-only verbs (delete_node, delete_edge, agent policy) are POST /api/call only, never an MCP tool.
     if (verb.access === 'read' && !read) continue;
     if (verb.access === 'write' && !write) continue;
-    s.registerTool(verb.name, { description: verb.description, inputSchema: verb.input }, async (args, ctx) => {
-      // ctx.http.req is a web Request (Headers object), so pull authorization out for whoIs().
-      const r = ctx?.http?.req;
+    s.registerTool(verb.name, { description: verb.description, inputSchema: verb.input }, async (args) => {
       try {
-        const who = whoIs({ url: r?.url, headers: { authorization: r?.headers?.get('authorization') ?? undefined } });
         const result = await callVerb(verb.name, args, who);
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       } catch (e) {
@@ -140,41 +136,35 @@ function mcpServerFor(read: boolean, write: boolean): McpServer {
       }
     });
   }
-  mcpServers.set(key, s);
   return s;
 }
 
-async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  let who: Who;
-  try {
-    who = whoIs(req);
-  } catch (e) {
-    if (!(e instanceof AuthError)) throw e;
-    res.writeHead(401, { 'content-type': 'application/json', 'www-authenticate': 'Bearer' });
-    res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32001, message: e.message }, id: null }));
-    return;
+// POST bodies go through the same 1 MB cap as every other route and are handed to the transport
+// pre-parsed (its third argument), so it never reads the stream itself.
+async function handleMcp(req: IncomingMessage, res: ServerResponse, who: Who): Promise<void> {
+  let body: unknown;
+  if (req.method === 'POST') {
+    try {
+      body = await readJsonBody(req);
+    } catch (e) {
+      if (e instanceof PayloadTooLargeError) return sendJson(res, 413, { error: 'body too large' });
+      return sendJson(res, 400, { jsonrpc: '2.0', error: { code: -32700, message: 'Parse error: Invalid JSON' }, id: null });
+    }
   }
   seenAgents.set(who.agent, Date.now());
+  const server = mcpServerFor(who);
   const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  await mcpServerFor(who.read ?? true, who.write ?? true).connect(transport);
-  await transport.handleRequest(req, res);
+  res.on('close', () => { void server.close(); });
+  await server.connect(transport);
+  await transport.handleRequest(req, res, body);
 }
 
 // ---- REST mirror of the MCP tools ----
 
 // POST /api/v1/<verb>: the same non-ui_only verbs as MCP, for clients that can call a REST API
-// but not speak MCP. Same whoIs()/callVerb() path as handleMcp, so tokens, agent policy and scope
+// but not speak MCP. Same requestWho()/callVerb() path as handleMcp, so tokens, agent policy and scope
 // behave identically. Bodies are the verb's args; errors are { error } like /api/call.
-async function handleRest(req: IncomingMessage, res: ServerResponse, name: string): Promise<void> {
-  let who: Who;
-  try {
-    who = whoIs(req);
-  } catch (e) {
-    if (!(e instanceof AuthError)) throw e;
-    res.writeHead(401, { 'content-type': 'application/json', 'www-authenticate': 'Bearer' });
-    res.end(JSON.stringify({ error: e.message }));
-    return;
-  }
+async function handleRest(req: IncomingMessage, res: ServerResponse, who: Who, name: string): Promise<void> {
   const verb = VERBS.find((v) => v.name === name && !v.ui_only); // ui_only verbs stay POST /api/call only.
   if (!verb) return sendJson(res, 404, { error: `unknown verb: ${name}` });
   const body = await parseBody(req, res);
@@ -187,10 +177,14 @@ async function handleRest(req: IncomingMessage, res: ServerResponse, name: strin
   }
 }
 
-// GET /openapi.json: request bodies come straight from each verb's zod schema (io: 'input' so
+// GET /api/v1/openapi.json: request bodies come straight from each verb's zod schema (io: 'input' so
 // defaults stay optional). Responses are left as a generic {} on purpose; see docs/muse-connector-brief.md
 // for the real shapes. No `servers`: an OpenAPI doc with none resolves against the URL it was fetched from.
+let openApi: ReturnType<typeof buildOpenApiDoc> | undefined;
 function openApiDoc() {
+  return (openApi ??= buildOpenApiDoc());
+}
+function buildOpenApiDoc() {
   const error = { type: 'object', properties: { error: { type: 'string' } }, required: ['error'] };
   const paths: Record<string, unknown> = {};
   for (const verb of VERBS) {
@@ -485,133 +479,148 @@ export async function apiPre(body: { tool_name: string; tool_input?: any; projec
   return { decision, ...(reason ? { reason } : {}), ...(context ? { context } : {}) };
 }
 
-// ---- HTTP server ----
+// ---- HTTP servers ----
 
-// Admin: how the local operator mints/lists/revokes BRAIN_PUBLIC bearer tokens. The raw token is
-// returned only by 'mint'; revoke takes the `hash` from 'list' (or the raw `token`).
-function apiToken(body: any, res: ServerResponse): void {
-  if (body?.action === 'mint') {
-    if (typeof body.agent !== 'string' || !body.agent.trim()) return sendJson(res, 400, { error: 'agent required' });
-    const { token, hash } = mintToken(body.agent.trim());
-    serverLog({ event: 'token_mint', agent: body.agent.trim(), hash });
-    return sendJson(res, 200, { token, hash, agent: body.agent.trim() });
+// Identity for /mcp and /api/v1/*, resolved once per request before the body is read: ?agent= on
+// the loopback listener, bearer token only on the public one. On a bad/missing token it answers
+// 401 itself and returns undefined.
+function requestWho(req: IncomingMessage, res: ServerResponse, kind: Listener, rpc: boolean): Who | undefined {
+  try {
+    return whoIs(req, { bearer: kind === 'public' });
+  } catch (e) {
+    if (!(e instanceof AuthError)) throw e;
+    res.writeHead(401, { 'content-type': 'application/json', 'www-authenticate': 'Bearer' });
+    res.end(JSON.stringify(rpc ? { jsonrpc: '2.0', error: { code: -32001, message: e.message }, id: null } : { error: e.message }));
+    return undefined;
   }
-  if (body?.action === 'revoke') {
-    const hash = typeof body.hash === 'string' ? body.hash : typeof body.token === 'string' ? hashToken(body.token) : null;
-    if (!hash) return sendJson(res, 400, { error: 'hash or token required' });
-    const revoked = revokeToken(hash);
-    if (revoked) serverLog({ event: 'token_revoke', hash });
-    return sendJson(res, 200, { revoked });
-  }
-  if (body?.action === 'list') return sendJson(res, 200, { tokens: listTokens() });
-  return sendJson(res, 400, { error: "action must be 'mint', 'revoke' or 'list'" });
-}
-
-function isLocalSocket(req: IncomingMessage): boolean {
-  const a = req.socket.remoteAddress ?? '';
-  const loopback = a === '::1' || a.startsWith('127.') || a.startsWith('::ffff:127.');
-  // A reverse proxy/tunnel on the same box connects from loopback but adds these; treat as remote.
-  const proxied = ['x-forwarded-for', 'forwarded', 'x-real-ip', 'cf-connecting-ip', 'fly-client-ip'].some((h) => req.headers[h] !== undefined);
-  return loopback && !proxied;
 }
 
 const validateHost = localhostHostValidation();
 const validateOrigin = localhostOriginValidation();
 
-export const httpServer = createServer(async (req, res) => {
-  const started = Date.now();
-  const method = req.method ?? 'GET';
-  const url = new URL(req.url ?? '/', 'http://localhost');
-  res.on('finish', () => serverLog({ method, path: url.pathname, status: res.statusCode, ms: Date.now() - started }));
+// Two listeners, one process, one callVerb() path. 'loopback' (BRAIN_PORT, 127.0.0.1): every route,
+// Host/Origin validation on every request, identity from ?agent=. 'public' (BRAIN_PUBLIC_PORT, only
+// when set): /mcp, POST /api/v1/<verb> and GET /api/v1/openapi.json and nothing else, no Host/Origin
+// check, identity only from a bearer token. Which listener a request came in on is the whole boundary;
+// no header, Host or socket address is consulted to decide it.
+type Listener = 'loopback' | 'public';
+function makeHandler(kind: Listener) {
+  return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const started = Date.now();
+    const method = req.method ?? 'GET';
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    res.on('finish', () => serverLog({ ...(kind === 'public' ? { listener: kind } : {}), method, path: url.pathname, status: res.statusCode, ms: Date.now() - started }));
 
-  // Security boundary. Loopback mode (default): every route gets the Host/Origin check, as always.
-  // BRAIN_PUBLIC: only remote routes (/mcp, /api/v1/*) skip it, and they authenticate by bearer
-  // token in whoIs() instead. Every other route stays local-only, and since a remote client can
-  // forge Host, public mode additionally requires a loopback socket with no proxy forwarding headers.
-  const remoteRoute = url.pathname === '/mcp' || url.pathname.startsWith('/api/v1/');
-  if (!(isPublic() && remoteRoute)) {
-    if (isPublic() && !isLocalSocket(req)) return sendJson(res, 403, { error: 'local only' });
-    if (!validateHost(req, res)) return;
-    if (!validateOrigin(req, res)) return;
-  }
+    const isMcp = url.pathname === '/mcp';
+    const isRest = method === 'POST' && url.pathname.startsWith('/api/v1/');
+    const isSpec = method === 'GET' && url.pathname === '/api/v1/openapi.json';
+    if (kind === 'public') {
+      if (!isMcp && !isRest && !isSpec) return sendJson(res, 404, { error: 'not found' });
+    } else {
+      if (!validateHost(req, res)) return;
+      if (!validateOrigin(req, res)) return;
+    }
 
-  try {
-    if (method === 'GET' && url.pathname === '/') {
-      const indexPath = join(PUBLIC_DIR, 'index.html');
-      if (existsSync(indexPath)) {
-        res.writeHead(200, { 'content-type': 'text/html' });
-        res.end(readFileSync(indexPath));
-      } else {
-        res.writeHead(200, { 'content-type': 'text/html' });
-        res.end('<!doctype html><p>Muse Brain: public/index.html not built yet.</p>');
+    try {
+      if (isSpec) return sendJson(res, 200, openApiDoc());
+      if (isMcp || isRest) {
+        const who = requestWho(req, res, kind, isMcp);
+        if (!who) return;
+        return isMcp ? handleMcp(req, res, who) : handleRest(req, res, who, url.pathname.slice('/api/v1/'.length));
       }
-      return;
-    }
-    if (url.pathname === '/mcp') return handleMcp(req, res);
-    // /api/v1/openapi.json is the same document: in BRAIN_PUBLIC mode /openapi.json is local-only (only /mcp and
-    // /api/v1/* are remote routes), so a remote client that wants the spec fetches it from under /api/v1/.
-    if (method === 'GET' && (url.pathname === '/openapi.json' || url.pathname === '/api/v1/openapi.json')) return sendJson(res, 200, openApiDoc());
-    if (method === 'POST' && url.pathname.startsWith('/api/v1/')) return handleRest(req, res, url.pathname.slice('/api/v1/'.length));
-    if (method === 'GET' && url.pathname === '/api/version') return sendJson(res, 200, apiVersion());
-    if (method === 'GET' && url.pathname === '/api/graph') return sendJson(res, 200, apiGraph(url.searchParams));
-    if (method === 'GET' && url.pathname === '/api/needs') return sendJson(res, 200, apiNeeds(url.searchParams));
-    if (method === 'GET' && url.pathname === '/api/install') return sendJson(res, 200, installStatus(installCtx()));
-    if (method === 'POST' && url.pathname === '/api/install') {
-      const body = await parseBody(req, res);
-      if (body === undefined) return;
-      if (!body || !(CLIENT_IDS as readonly string[]).includes(body.client)) return sendJson(res, 400, { error: 'unknown client' });
-      try {
-        const result = install(body.client, installCtx());
-        for (const path of result.changed) serverLog({ event: 'install', client: body.client, path });
-        return sendJson(res, 200, result);
-      } catch (e) {
-        return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+      if (kind === 'public') return sendJson(res, 404, { error: 'not found' }); // unreachable; belt and braces
+      if (method === 'GET' && url.pathname === '/') {
+        const indexPath = join(PUBLIC_DIR, 'index.html');
+        if (existsSync(indexPath)) {
+          res.writeHead(200, { 'content-type': 'text/html' });
+          res.end(readFileSync(indexPath));
+        } else {
+          res.writeHead(200, { 'content-type': 'text/html' });
+          res.end('<!doctype html><p>Muse Brain: public/index.html not built yet.</p>');
+        }
+        return;
       }
-    }
-    if (method === 'POST' && url.pathname === '/api/call') {
-      const body = await parseBody(req, res);
-      if (body === undefined) return;
-      try {
-        return sendJson(res, 200, await apiCall(body));
-      } catch (e) {
-        return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+      if (method === 'GET' && url.pathname === '/api/version') return sendJson(res, 200, apiVersion());
+      if (method === 'GET' && url.pathname === '/api/graph') return sendJson(res, 200, apiGraph(url.searchParams));
+      if (method === 'GET' && url.pathname === '/api/needs') return sendJson(res, 200, apiNeeds(url.searchParams));
+      if (method === 'GET' && url.pathname === '/api/install') return sendJson(res, 200, installStatus(installCtx()));
+      if (method === 'POST' && url.pathname === '/api/install') {
+        const body = await parseBody(req, res);
+        if (body === undefined) return;
+        if (!body || !(CLIENT_IDS as readonly string[]).includes(body.client)) return sendJson(res, 400, { error: 'unknown client' });
+        try {
+          const result = install(body.client, installCtx());
+          for (const path of result.changed) serverLog({ event: 'install', client: body.client, path });
+          return sendJson(res, 200, result);
+        } catch (e) {
+          return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+        }
       }
+      if (method === 'POST' && url.pathname === '/api/call') {
+        const body = await parseBody(req, res);
+        if (body === undefined) return;
+        try {
+          return sendJson(res, 200, await apiCall(body));
+        } catch (e) {
+          return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+        }
+      }
+      if (method === 'POST' && url.pathname === '/api/recall') {
+        const body = await parseBody(req, res);
+        if (body === undefined) return;
+        return sendJson(res, 200, await apiRecall(body));
+      }
+      if (method === 'POST' && url.pathname === '/api/pre') {
+        const body = await parseBody(req, res);
+        if (body === undefined) return;
+        return sendJson(res, 200, await apiPre(body));
+      }
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not found' }));
+    } catch (e) {
+      serverLog({ method, path: url.pathname, error: e instanceof Error ? e.message : String(e) });
+      if (!res.headersSent) sendJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
     }
-    if (method === 'POST' && url.pathname === '/api/token') {
-      const body = await parseBody(req, res);
-      if (body === undefined) return;
-      return apiToken(body, res);
-    }
-    if (method === 'POST' && url.pathname === '/api/recall') {
-      const body = await parseBody(req, res);
-      if (body === undefined) return;
-      return sendJson(res, 200, await apiRecall(body));
-    }
-    if (method === 'POST' && url.pathname === '/api/pre') {
-      const body = await parseBody(req, res);
-      if (body === undefined) return;
-      return sendJson(res, 200, await apiPre(body));
-    }
-    res.writeHead(404, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: 'not found' }));
-  } catch (e) {
-    serverLog({ method, path: url.pathname, error: e instanceof Error ? e.message : String(e) });
-    if (!res.headersSent) sendJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
-  }
-});
+  };
+}
+
+export const httpServer = createServer(makeHandler('loopback'));
+export const publicServer = createServer(makeHandler('public'));
+
+// BRAIN_PUBLIC_PORT unset or empty = no public listener. Anything else must be a valid port that
+// differs from BRAIN_PORT, or startup fails.
+export function publicPort(env: NodeJS.ProcessEnv = process.env, loopbackPort: number = PORT): number | null {
+  const raw = env.BRAIN_PUBLIC_PORT;
+  if (!raw) return null;
+  const n = Number(raw);
+  if (!/^\d+$/.test(raw) || n < 1 || n > 65535) throw new Error(`BRAIN_PUBLIC_PORT must be a port number (1-65535), got ${JSON.stringify(raw)}`);
+  if (n === loopbackPort) throw new Error(`BRAIN_PUBLIC_PORT (${n}) must differ from BRAIN_PORT (${loopbackPort})`);
+  return n;
+}
 
 function startServer(): void {
-  const host = isPublic() ? '0.0.0.0' : '127.0.0.1';
-  httpServer.listen(PORT, host, () => {
-    serverLog({ event: 'start', port: PORT, host });
+  let pub: number | null;
+  try {
+    pub = publicPort();
+  } catch (e) {
+    console.error(`brain: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  }
+  httpServer.listen(PORT, '127.0.0.1', () => {
+    serverLog({ event: 'start', port: PORT, host: '127.0.0.1' });
     backupDaily(getDb()).catch(() => {});
   });
+  if (pub !== null) {
+    const host = process.env.BRAIN_HOST || '0.0.0.0';
+    publicServer.listen(pub, host, () => serverLog({ event: 'start', listener: 'public', port: pub, host }));
+  }
   const backupInterval = setInterval(() => backupDaily(getDb()).catch(() => {}), 6 * 3600 * 1000);
   backupInterval.unref();
 
   process.on('SIGTERM', () => {
     clearInterval(backupInterval);
-    httpServer.close(() => {
+    const close = (s: typeof httpServer) => new Promise<void>((resolve) => (s.listening ? s.close(() => resolve()) : resolve()));
+    Promise.all([close(httpServer), close(publicServer)]).then(() => {
       try { getDb().close(); } catch { /* already closed */ }
       process.exit(0);
     });
