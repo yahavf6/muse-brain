@@ -19,6 +19,24 @@
 
 [Quickstart](#quickstart) | [How it compares](#how-it-compares) | [Roadmap](#roadmap)
 
+## Deploy
+
+Muse Brain also runs as a container, so it can serve every agent on a team instead of just the machine it's installed on.
+
+### Fly.io
+
+```bash
+fly launch
+```
+
+Run from a clone of this repo. `fly launch` picks up the repo's `Dockerfile` and `fly.toml` automatically -- the `brain_data` volume, the `BRAIN_DB`/`BRAIN_LOG_DIR`/`BRAIN_PUBLIC` env vars, and the HTTP service on port 4747 with forced HTTPS are all already in `fly.toml`. Answer the prompts (or `fly deploy` on subsequent pushes) and the DB and logs persist across deploys on the mounted volume.
+
+### DigitalOcean
+
+Create a Droplet from the **Docker on Ubuntu** Marketplace image with a Volume attached, mount the volume at `/mnt/brain_data`, and paste [`.do-marketplace/cloud-init.yaml`](.do-marketplace/cloud-init.yaml) into the Droplet's **User Data** field at creation time -- it starts the container with the volume and env vars wired up. Or skip User Data and SSH in once the Droplet is up to run the same `docker run` line by hand.
+
+This is a Droplet, not the "Deploy to DO" App Platform button, because App Platform's disk is ephemeral and would wipe the database on every redeploy.
+
 ## The thesis
 
 Memory layers remember what was said. mem0 extracts facts from a conversation into a vector store. Zep and Graphiti build a temporal graph of episodes and entities. claude-mem compresses a coding session into flat observations. All of that is useful, and none of it captures why an agent did something, whether the decision turned out to be right, or what should never be tried again.

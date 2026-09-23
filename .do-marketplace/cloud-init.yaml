@@ -1,0 +1,29 @@
+#cloud-config
+# User Data for a DigitalOcean "Docker on Ubuntu" Marketplace 1-Click Droplet
+# (Docker is pre-installed on that image, so no docker-install step is needed
+# here).
+#
+# Before creating the Droplet:
+#   - Attach a DigitalOcean Volume to it, and mount that volume at
+#     /mnt/brain_data -- either by formatting/mounting it yourself after
+#     boot, or by picking the "format & mount" option DO offers at creation
+#     time with mount point /mnt/brain_data. That volume is what makes the
+#     sqlite DB and logs survive a Droplet rebuild/resize.
+#   - Paste this whole file as the Droplet's "User Data" field.
+#
+# This assumes a CI pipeline elsewhere publishes ghcr.io/yahavf6/muse-brain:latest
+# from this repo's Dockerfile -- that pipeline is not part of this repo yet,
+# out of scope here. Until it exists, build and push the image by hand, or
+# point the `docker run` line below at a locally built tag.
+
+runcmd:
+  - mkdir -p /mnt/brain_data
+  - >
+    docker run -d --name muse-brain --restart unless-stopped
+    -p 4747:4747
+    -v /mnt/brain_data:/data
+    -e BRAIN_PUBLIC=1
+    -e BRAIN_DB=/data/brain.db
+    -e BRAIN_LOG_DIR=/data/logs
+    -e BRAIN_TOKENS_FILE=/data/tokens.json
+    ghcr.io/yahavf6/muse-brain:latest

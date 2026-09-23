@@ -1,0 +1,29 @@
+# fly.toml for Muse Brain -- `fly launch` will read this if it already
+# exists, or `fly deploy` once the app has been created with `fly apps create`.
+# Builds from the repo's Dockerfile (no [build] section needed, Fly
+# auto-detects it).
+
+app = "muse-brain"
+primary_region = "iad"
+
+[http_service]
+  internal_port = 4747
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+[[mounts]]
+  source = "brain_data"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+[env]
+  BRAIN_DB = "/data/brain.db"
+  BRAIN_LOG_DIR = "/data/logs"
+  BRAIN_PUBLIC = "1"
+  BRAIN_TOKENS_FILE = "/data/tokens.json"
