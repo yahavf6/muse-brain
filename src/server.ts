@@ -4,6 +4,7 @@ import { readFileSync, existsSync, mkdirSync, appendFileSync, statSync, renameSy
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/server';
 import { NodeStreamableHTTPServerTransport, localhostHostValidation, localhostOriginValidation } from '@modelcontextprotocol/node';
 import { VERBS, callVerb, whoIs, agentWho, AuthError, getDb, getVersion, syncVersionFromDb, contextNodesEdges, rowToNode, buildFtsQuery, scopeClause, scopeParam } from './verbs.ts';
@@ -27,7 +28,7 @@ const GUARD_LOG = join(LOG_DIR, 'guard.log');
 const PUBLIC_DIR = join(new URL('.', import.meta.url).pathname, '..', 'public');
 export const REPO_DIR = join(new URL('.', import.meta.url).pathname, '..');
 
-// Last time each `agent` (the ?agent= query param, via whoIs) hit /mcp. Used only for the
+// Last time each `agent` (the ?agent= query param or bearer token, via whoIs) hit /mcp or /api/v1/*. Used only for the
 // "who's connected" list on /api/version; not persisted, resets on restart.
 const seenAgents = new Map<string, number>();
 function installCtx() {
@@ -157,6 +158,64 @@ async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<voi
   const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   await mcpServerFor(who.read ?? true, who.write ?? true).connect(transport);
   await transport.handleRequest(req, res);
+}
+
+// ---- REST mirror of the MCP tools ----
+
+// POST /api/v1/<verb>: the same non-ui_only verbs as MCP, for clients that can call a REST API
+// but not speak MCP. Same whoIs()/callVerb() path as handleMcp, so tokens, agent policy and scope
+// behave identically. Bodies are the verb's args; errors are { error } like /api/call.
+async function handleRest(req: IncomingMessage, res: ServerResponse, name: string): Promise<void> {
+  let who: Who;
+  try {
+    who = whoIs(req);
+  } catch (e) {
+    if (!(e instanceof AuthError)) throw e;
+    res.writeHead(401, { 'content-type': 'application/json', 'www-authenticate': 'Bearer' });
+    res.end(JSON.stringify({ error: e.message }));
+    return;
+  }
+  const verb = VERBS.find((v) => v.name === name && !v.ui_only); // ui_only verbs stay POST /api/call only.
+  if (!verb) return sendJson(res, 404, { error: `unknown verb: ${name}` });
+  const body = await parseBody(req, res);
+  if (body === undefined) return;
+  seenAgents.set(who.agent, Date.now());
+  try {
+    return sendJson(res, 200, await callVerb(verb.name, body, who));
+  } catch (e) {
+    return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+  }
+}
+
+// GET /openapi.json: request bodies come straight from each verb's zod schema (io: 'input' so
+// defaults stay optional). Responses are left as a generic {} on purpose; see docs/muse-connector-brief.md
+// for the real shapes. No `servers`: an OpenAPI doc with none resolves against the URL it was fetched from.
+function openApiDoc() {
+  const error = { type: 'object', properties: { error: { type: 'string' } }, required: ['error'] };
+  const paths: Record<string, unknown> = {};
+  for (const verb of VERBS) {
+    if (verb.ui_only) continue;
+    const { $schema: _, ...schema } = z.toJSONSchema(verb.input, { io: 'input' });
+    paths[`/api/v1/${verb.name}`] = {
+      post: {
+        operationId: verb.name,
+        summary: verb.description,
+        security: [{ bearerAuth: [] }],
+        requestBody: { required: true, content: { 'application/json': { schema } } },
+        responses: {
+          '200': { description: 'The verb result.', content: { 'application/json': { schema: {} } } },
+          '400': { description: 'Bad arguments or a refused operation.', content: { 'application/json': { schema: error } } },
+          '401': { description: 'Missing or invalid bearer token.', content: { 'application/json': { schema: error } } },
+        },
+      },
+    };
+  }
+  return {
+    openapi: '3.1.0',
+    info: { title: 'Muse Brain', version: '1.0.0', description: mcpInstructions(true, true) },
+    paths,
+    components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer' } } },
+  };
 }
 
 // ---- /api/version, /api/graph, /api/needs ----
@@ -489,6 +548,10 @@ export const httpServer = createServer(async (req, res) => {
       return;
     }
     if (url.pathname === '/mcp') return handleMcp(req, res);
+    // /api/v1/openapi.json is the same document: in BRAIN_PUBLIC mode /openapi.json is local-only (only /mcp and
+    // /api/v1/* are remote routes), so a remote client that wants the spec fetches it from under /api/v1/.
+    if (method === 'GET' && (url.pathname === '/openapi.json' || url.pathname === '/api/v1/openapi.json')) return sendJson(res, 200, openApiDoc());
+    if (method === 'POST' && url.pathname.startsWith('/api/v1/')) return handleRest(req, res, url.pathname.slice('/api/v1/'.length));
     if (method === 'GET' && url.pathname === '/api/version') return sendJson(res, 200, apiVersion());
     if (method === 'GET' && url.pathname === '/api/graph') return sendJson(res, 200, apiGraph(url.searchParams));
     if (method === 'GET' && url.pathname === '/api/needs') return sendJson(res, 200, apiNeeds(url.searchParams));
