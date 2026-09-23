@@ -6,12 +6,13 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/server';
 import { NodeStreamableHTTPServerTransport, localhostHostValidation, localhostOriginValidation } from '@modelcontextprotocol/node';
-import { VERBS, callVerb, whoIs, getDb, getVersion, syncVersionFromDb, contextNodesEdges, rowToNode, buildFtsQuery, scopeClause, scopeParam } from './verbs.ts';
+import { VERBS, callVerb, whoIs, agentWho, AuthError, getDb, getVersion, syncVersionFromDb, contextNodesEdges, rowToNode, buildFtsQuery, scopeClause, scopeParam } from './verbs.ts';
 import type { Who, Guard } from './verbs.ts';
 import { judge, jevEnabled } from './judge.ts';
 import type { Question } from './judge.ts';
 import { backupDaily } from './db.ts';
 import { installStatus, install, CLIENT_IDS } from './install.ts';
+import { isPublic, mintToken, revokeToken, listTokens, hashToken } from './tokens.ts';
 
 const ENV_PATH = join(homedir(), '.brain', '.env');
 try {
@@ -127,8 +128,10 @@ function mcpServerFor(read: boolean, write: boolean): McpServer {
     if (verb.access === 'read' && !read) continue;
     if (verb.access === 'write' && !write) continue;
     s.registerTool(verb.name, { description: verb.description, inputSchema: verb.input }, async (args, ctx) => {
-      const who = whoIs((ctx?.http?.req as { url?: string } | undefined) ?? {});
+      // ctx.http.req is a web Request (Headers object), so pull authorization out for whoIs().
+      const r = ctx?.http?.req;
       try {
+        const who = whoIs({ url: r?.url, headers: { authorization: r?.headers?.get('authorization') ?? undefined } });
         const result = await callVerb(verb.name, args, who);
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       } catch (e) {
@@ -141,7 +144,15 @@ function mcpServerFor(read: boolean, write: boolean): McpServer {
 }
 
 async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const who = whoIs(req);
+  let who: Who;
+  try {
+    who = whoIs(req);
+  } catch (e) {
+    if (!(e instanceof AuthError)) throw e;
+    res.writeHead(401, { 'content-type': 'application/json', 'www-authenticate': 'Bearer' });
+    res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32001, message: e.message }, id: null }));
+    return;
+  }
   seenAgents.set(who.agent, Date.now());
   const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   await mcpServerFor(who.read ?? true, who.write ?? true).connect(transport);
@@ -259,7 +270,7 @@ export async function apiCall(body: any) {
 // /api/recall and apiPre's file-touch advice are only reached by the Claude Code hook, so they
 // run under the claude-code agent's policy.
 function hookAgent(): Who {
-  return whoIs({ url: '/mcp?agent=claude-code' });
+  return agentWho('claude-code');
 }
 
 export async function apiRecall(body: { prompt: string; project?: string }) {
@@ -417,6 +428,34 @@ export async function apiPre(body: { tool_name: string; tool_input?: any; projec
 
 // ---- HTTP server ----
 
+// Admin: how the local operator mints/lists/revokes BRAIN_PUBLIC bearer tokens. The raw token is
+// returned only by 'mint'; revoke takes the `hash` from 'list' (or the raw `token`).
+function apiToken(body: any, res: ServerResponse): void {
+  if (body?.action === 'mint') {
+    if (typeof body.agent !== 'string' || !body.agent.trim()) return sendJson(res, 400, { error: 'agent required' });
+    const { token, hash } = mintToken(body.agent.trim());
+    serverLog({ event: 'token_mint', agent: body.agent.trim(), hash });
+    return sendJson(res, 200, { token, hash, agent: body.agent.trim() });
+  }
+  if (body?.action === 'revoke') {
+    const hash = typeof body.hash === 'string' ? body.hash : typeof body.token === 'string' ? hashToken(body.token) : null;
+    if (!hash) return sendJson(res, 400, { error: 'hash or token required' });
+    const revoked = revokeToken(hash);
+    if (revoked) serverLog({ event: 'token_revoke', hash });
+    return sendJson(res, 200, { revoked });
+  }
+  if (body?.action === 'list') return sendJson(res, 200, { tokens: listTokens() });
+  return sendJson(res, 400, { error: "action must be 'mint', 'revoke' or 'list'" });
+}
+
+function isLocalSocket(req: IncomingMessage): boolean {
+  const a = req.socket.remoteAddress ?? '';
+  const loopback = a === '::1' || a.startsWith('127.') || a.startsWith('::ffff:127.');
+  // A reverse proxy/tunnel on the same box connects from loopback but adds these; treat as remote.
+  const proxied = ['x-forwarded-for', 'forwarded', 'x-real-ip', 'cf-connecting-ip', 'fly-client-ip'].some((h) => req.headers[h] !== undefined);
+  return loopback && !proxied;
+}
+
 const validateHost = localhostHostValidation();
 const validateOrigin = localhostOriginValidation();
 
@@ -426,8 +465,16 @@ export const httpServer = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost');
   res.on('finish', () => serverLog({ method, path: url.pathname, status: res.statusCode, ms: Date.now() - started }));
 
-  if (!validateHost(req, res)) return;
-  if (!validateOrigin(req, res)) return;
+  // Security boundary. Loopback mode (default): every route gets the Host/Origin check, as always.
+  // BRAIN_PUBLIC: only remote routes (/mcp, /api/v1/*) skip it, and they authenticate by bearer
+  // token in whoIs() instead. Every other route stays local-only, and since a remote client can
+  // forge Host, public mode additionally requires a loopback socket with no proxy forwarding headers.
+  const remoteRoute = url.pathname === '/mcp' || url.pathname.startsWith('/api/v1/');
+  if (!(isPublic() && remoteRoute)) {
+    if (isPublic() && !isLocalSocket(req)) return sendJson(res, 403, { error: 'local only' });
+    if (!validateHost(req, res)) return;
+    if (!validateOrigin(req, res)) return;
+  }
 
   try {
     if (method === 'GET' && url.pathname === '/') {
@@ -467,6 +514,11 @@ export const httpServer = createServer(async (req, res) => {
         return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
       }
     }
+    if (method === 'POST' && url.pathname === '/api/token') {
+      const body = await parseBody(req, res);
+      if (body === undefined) return;
+      return apiToken(body, res);
+    }
     if (method === 'POST' && url.pathname === '/api/recall') {
       const body = await parseBody(req, res);
       if (body === undefined) return;
@@ -486,8 +538,9 @@ export const httpServer = createServer(async (req, res) => {
 });
 
 function startServer(): void {
-  httpServer.listen(PORT, '127.0.0.1', () => {
-    serverLog({ event: 'start', port: PORT });
+  const host = isPublic() ? '0.0.0.0' : '127.0.0.1';
+  httpServer.listen(PORT, host, () => {
+    serverLog({ event: 'start', port: PORT, host });
     backupDaily(getDb()).catch(() => {});
   });
   const backupInterval = setInterval(() => backupDaily(getDb()).catch(() => {}), 6 * 3600 * 1000);

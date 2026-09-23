@@ -4,6 +4,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { openDb } from './db.ts';
 import { judge, jevEnabled } from './judge.ts';
 import type { Question } from './judge.ts';
+import { isPublic, verifyToken } from './tokens.ts';
 
 // read/write/projects come from the agent_policy table (see whoIs); undefined = unrestricted.
 export type Who = { agent: string; scope: 'full' | 'admin'; read?: boolean; write?: boolean; projects?: string[] | null };
@@ -39,11 +40,33 @@ export function syncVersionFromDb(): void {
   }
 }
 
-export function whoIs(req: { url?: string }): Who {
+// Thrown by whoIs() in BRAIN_PUBLIC mode on a missing/invalid bearer token; server.ts maps it to 401.
+export class AuthError extends Error {}
+
+type ReqHeaders = Record<string, string | string[] | undefined>;
+
+// BRAIN_PUBLIC unset: identity is the self-declared ?agent= (loopback only), headers ignored.
+// BRAIN_PUBLIC set: identity comes only from `Authorization: Bearer <token>` (?agent= ignored);
+// no/invalid token throws AuthError. Either way the agent_policy row then narrows it.
+export function whoIs(req: { url?: string; headers?: ReqHeaders }): Who {
+  if (isPublic()) {
+    const raw = req.headers?.authorization;
+    const header = Array.isArray(raw) ? raw[0] : raw;
+    const m = /^Bearer\s+(\S+)\s*$/i.exec(header ?? '');
+    const t = m ? verifyToken(m[1]) : null;
+    if (!t) throw new AuthError('missing or invalid bearer token');
+    return agentWho(t.agent);
+  }
   let agent = 'unknown';
   try {
     agent = new URL(req.url ?? '', 'http://localhost').searchParams.get('agent') || 'unknown';
   } catch { /* malformed url: stays 'unknown' */ }
+  return agentWho(agent);
+}
+
+// scope 'full' + that agent's agent_policy row. Also used directly for server-internal identities
+// (the hook's claude-code agent) that never arrive as a request.
+export function agentWho(agent: string): Who {
   const who: Who = { agent, scope: 'full' };
   const row = db.prepare('SELECT can_read, can_write, projects FROM agent_policy WHERE agent = ?').get(agent) as
     { can_read: number; can_write: number; projects: string | null } | undefined;

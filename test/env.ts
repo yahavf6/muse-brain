@@ -12,3 +12,4 @@ export const TEST_LOG_DIR = join(testHome, 'logs');
 export const TEST_DB = join(testHome, 'brain.db');
 process.env.BRAIN_DB = TEST_DB;
 process.env.BRAIN_LOG_DIR = TEST_LOG_DIR;
+process.env.BRAIN_TOKENS_FILE = join(testHome, 'tokens.json');
