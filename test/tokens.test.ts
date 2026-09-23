@@ -3,6 +3,10 @@ import './env.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { mintToken, verifyToken, revokeToken, listTokens, hashToken } from '../src/tokens.ts';
 import { whoIs, AuthError, callVerb } from '../src/verbs.ts';
 import { httpServer } from '../src/server.ts';
@@ -78,5 +82,26 @@ test('http: public mode -- /mcp needs a bearer (401) and skips Host; /api/call k
   } finally {
     if (prev === undefined) delete process.env.BRAIN_PUBLIC; else process.env.BRAIN_PUBLIC = prev;
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+  }
+});
+
+test('token CLI: mint prints a token that verifies against BRAIN_TOKENS_FILE', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'brain-token-cli-'));
+  const tokensFile = join(dir, 'tokens.json');
+  const script = new URL('../scripts/token.ts', import.meta.url).pathname;
+  const prev = process.env.BRAIN_TOKENS_FILE;
+  try {
+    const out = execFileSync(process.execPath, ['--no-warnings=ExperimentalWarning', script, 'mint', 'cli-test'], {
+      encoding: 'utf8',
+      env: { ...process.env, BRAIN_TOKENS_FILE: tokensFile, BRAIN_DB: join(dir, 'brain.db') },
+    });
+    const token = /^token: ([0-9a-f]{64})$/m.exec(out)?.[1];
+    assert.ok(token, 'mint prints the raw token');
+    process.env.BRAIN_TOKENS_FILE = tokensFile;
+    assert.deepEqual(verifyToken(token), { agent: 'cli-test', scope: 'full' });
+    assert.ok(out.includes(hashToken(token)), 'mint prints the hash too');
+  } finally {
+    if (prev === undefined) delete process.env.BRAIN_TOKENS_FILE; else process.env.BRAIN_TOKENS_FILE = prev;
+    rmSync(dir, { recursive: true, force: true });
   }
 });

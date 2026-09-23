@@ -1,10 +1,10 @@
-> Internal design note from 2026-09-22, kept as history. Paths, service names and the claude-mem teardown reflect the founder's machine at the time; the README is the current source of truth.
+> Internal design note from 2026-09-22, kept as history. Paths, service names and the claude-mem teardown reflect the founder's machine at the time; the README is the current source of truth. The "V2: cloud agents" section was rewritten on 2026-09-23 to record what was built.
 
 # Muse Brain: the company brain. Thin custom typed graph on SQLite, local server with live graph view
 
 Naming: product and repo = **Muse Brain** (`muse-brain`, also the `package.json` name and the graph page title). The MCP server name stays `brain` (short tool names `mcp__brain__*`; the `mark` hook regex depends on it) and data stays in `~/.brain/`. Not related to Meta Muse, the V2 cloud agent; docs say "Meta Muse" in full wherever that product is meant.
 
-> Status 2026-09-21: design settled over four rounds (memory systems, graph DBs, company-brain repos, claude-mem internals, graphify, TypeSafe/Jev, cloud agents). Ponytail review applied. V1 = local. V2 = cloud agents, designed for but not built.
+> Status 2026-09-21: design settled over four rounds (memory systems, graph DBs, company-brain repos, claude-mem internals, graphify, TypeSafe/Jev, cloud agents). Ponytail review applied. V1 = local. V2 = cloud agents, built 2026-09-23 (see "V2: cloud agents").
 
 ## Context
 
@@ -175,16 +175,35 @@ One-time edits, recorded in `README.md`. **launchd**: `~/Library/LaunchAgents/ai
 
 **Retire claude-mem** (last, after verification): disable `claude-mem@thedotmack` in `~/.claude/settings.json` and `claude-mem@claude-mem-local` in `~/.codex/config.toml`; `pkill -f 'plugins/cache/thedotmack/claude-mem'; pkill -f chroma-mcp`. Keep `~/.claude-mem/`. Do not pay for Pro.
 
-## V2: cloud agents. Not built now, v1 must not block it
+## V2: cloud agents. Built 2026-09-23
 
-Research 2026-09-21 (products newer than the model's training data; reported, not verified): **Grok Bot** (xAI cloud bots) adds a custom MCP server by chat, accepts a bearer header, rejects localhost. **Meta Muse** (consumer) has no MCP; you give it API info and it builds a Custom Connector, so it needs REST + OpenAPI. **Instinct**: no MCP, API or connector surface found; parked. All run in vendor clouds, so they need public HTTPS. Their terminal siblings (Grok Build, Muse Code) would work with v1 as is, but the user wants the cloud ones.
+Research 2026-09-23 (products newer than the model's training data; as reported by vendor docs and forums, not personally verified against a live account):
 
-What v1 does so v2 is additive, not a rewrite:
-- **One verb table** (`src/verbs.ts`): v2 generates `/api/v1/<verb>` + `openapi.json` (zod `toJSONSchema`) from it. No handler changes.
-- **One identity function** `whoIs(req) -> {agent, scope}`: v1 reads `?agent=` on loopback; v2 reads a bearer token (chat-added connectors drop query params). Handlers only ever see `{agent, scope}`.
-- The loopback host/origin check is a separate layer; the public listener swaps it for token auth. No handler assumes loopback.
-- Streamable HTTP only, stateless. No SSE (tunnels break it, Muse Code lacks it). OAuth is not required by any target.
-V2 scope when it comes: public hostname (named Cloudflare Tunnel from the Mac, or the Hetzner box: decide then; Hetzner costs the fast local file reads in hooks), `~/.brain/tokens.json` with hashed tokens -> `{agent, scope}`, REST/OpenAPI mirror, Grok Bot + Meta Muse onboarding notes. **Cloud agents get full access per the user's decision, including `approve_rule`.** Known risk, stated once: this product class has documented prompt-injection incidents, and a remote approval can activate a guard. Scopes exist per token so access can be tightened without code changes, and every remote approval is stamped with the token's agent.
+- **Grok Bot** (SpaceXAI + Cursor, beta since 2026-08-11; not the @grok account on X or grok.com). Runs on a persistent per-user cloud VM. A custom MCP server is added by telling a Bot in chat "Add this MCP server: <url>" (some versions have no dedicated settings form); tools appear on the next message, the server then shows under Settings > Plugins > Yours, and it is attached in chat with `@`. The server must be reachable over the public internet (Streamable HTTP or SSE); localhost does not work. **Auth is unsettled:** third-party guides describe passing an API key as a custom header, but a Cursor staff reply dated 2026-09-17 says Grok Bot connectors currently authenticate only via OAuth and there is no secure place to enter a header secret (not via chat, not via model-visible tool arguments). Enterprise Cursor teams can enforce an MCP allowlist (the server URL must be on it). Sources: https://forum.cursor.com/t/grokbot-custom-connectors/169965, https://docs.x.ai/grok-bot/computer-and-apps, https://forum.cursor.com/t/grok-bot-custom-mcp-oauth-fails-before-sign-in-redirect-uri-not-allowed/171877.
+- **Meta Muse** (Meta's consumer personal agent, launched 2026-09-08; runs on Muse Secure VM, where Sentinel approves network egress and connector actions). No MCP support. It connects through Connectors: Meta-reviewed directory ones (developers submit at muse.ai/platform; Meta has published no SDK, fees or terms) or a Custom Connector that Muse writes itself when asked (credentials go in its Secure Credentials Store; Meta does not review custom connectors). The recipe of pasting an agent-facing brief, giving the key when asked and approving the destination in Sentinel is what third-party vendors report working; Meta documents only the general Custom Connector flow. Sources: https://www.meta.com/help/artificial-intelligence/1687253048996149/, https://research.meta.ai/blog/security-and-safety-for-ai-agents-our-approach-with-muse.
+- **Muse Code** (Meta's separate terminal coding agent, not the Muse app): ordinary MCP, configured in `~/.config/muse/settings.json` (`"schema_version": 1`, `mcp_servers.<name>` with `transport: "streamable_http"`, `url`, `headers`, `mode`). MCP servers are not sandboxed there. Source: https://dev.meta.ai/docs/muse-code/extending.
+- **Instinct**: parked. The 2026-09-21 research found no MCP, API or connector surface; not rechecked. Grok Build, named as a terminal sibling in the same research, is not covered here.
+
+All of these run in vendor clouds, so they need a public HTTPS endpoint. The user wants the cloud ones with full access.
+
+### What was built
+
+- `src/tokens.ts`: `isPublic()` is true only for `BRAIN_PUBLIC=1` (exactly `1`; `0` or `false` stay off). Tokens are 32 random bytes as hex, stored as sha256 -> `{agent, scope: 'full', created_at}` in `BRAIN_TOKENS_FILE` (default `~/.brain/tokens.json`, file created mode 0600), shown once at mint. `verifyToken()` hardcodes `scope: 'full'`, so a token can never become `admin`.
+- `src/verbs.ts`: `whoIs(req)` in public mode reads only `Authorization: Bearer` (`?agent=` is ignored) and throws `AuthError` on a missing or unknown token. `agentWho(agent)` builds `scope: 'full'` plus the `agent_policy` row, shared by both modes and by the hook's server-internal `claude-code` identity, so handlers still only ever see `{agent, scope}`.
+- `src/server.ts`: `remoteRoute` gating in the main handler (only `/mcp` and `/api/v1/*` skip the Host/Origin check in public mode; every other route needs a loopback socket with no proxy forwarding header, then Host/Origin); binds `0.0.0.0` in public mode; `AuthError` becomes 401 with `WWW-Authenticate: Bearer`; `POST /api/token` (mint, list, revoke; local-only); `handleRest()` serves `POST /api/v1/<verb>` for every non-`ui_only` verb through the same `whoIs()`/`callVerb()` path; `openApiDoc()` builds the OpenAPI 3.1 document from the verbs' zod schemas at `GET /openapi.json` and `GET /api/v1/openapi.json` (the second because the first is local-only in public mode).
+- `scripts/token.ts` (`npm run token -- mint|list|revoke`): the operator's way to manage tokens inside a container, where `POST /api/token` is loopback-only and slim images have no curl. `mint <agent> --read-only` also upserts an `agent_policy` row (read on, write off).
+- `Dockerfile`, `.dockerignore`, `fly.toml`, `.do-marketplace/cloud-init.yaml`: the deploy files. `docs/muse-connector-brief.md`: the agent-facing REST brief for Meta Muse's Custom Connector. Tests: `test/tokens.test.ts`, `test/rest.test.ts`.
+
+What v1 did so this stayed additive: one verb table (the REST and OpenAPI mirror needed no handler changes), one identity function, and a Host/Origin check that lives in the server, not in handlers. Streamable HTTP only, stateless, no SSE (Grok Bot accepts Streamable HTTP or SSE, so this suffices). OAuth is not built.
+
+### Decisions
+
+- **SQLite on a persistent volume, not Postgres.** Hooks read the file directly with `sqlite3 -readonly` and must fail open when the server is down, which a network database cannot do; this is the same reason as brain node #16 (hooks and the CLI must read the DB file while the server writes). The FTS5 index, its `bm25(5,2,1)` ranking and the `term* OR term*` query builder are FTS5-specific, so a Postgres port means reworking search, not a drop-in swap.
+- **Fly.io is the primary deploy.** `fly.toml` mounts one volume at `/data` (DB, logs, tokens file), forces HTTPS and keeps one machine running (`auto_stop_machines = false`, `min_machines_running = 1`).
+- **A DigitalOcean Droplet, not App Platform** (its disk is ephemeral, so every redeploy would wipe the database) **and not Vercel** (stateless functions cannot hold a sqlite file). The Droplet has no TLS in front of the container by default.
+- **Cloudflare Tunnel from a Mac** is the no-cost alternative: start the server with `BRAIN_PUBLIC=1 npm start` and point `cloudflared tunnel` at `localhost:4747`. Not shipped as a script; local agents on that machine then need tokens too.
+- **Cloud agents get full access, including `approve_rule`, per the user's decision.** Known risk, stated once: this product class has documented prompt-injection incidents, and a remote approval can activate a guard. The restriction option is `npm run token -- mint <agent> --read-only`, which sets that agent's `agent_policy` row to read-only. Per-token scopes and expiry are not built. Note that an approval records only the caller-supplied `approved_by` string, not the token's agent name.
+- **A token handed to Grok Bot through chat is visible to the model and the transcript** (see the auth note above): mint a dedicated one per Bot, prefer `--read-only`, revoke on any doubt. If Grok Bot stays OAuth-only, the fix is an OAuth 2.1 server, which is on the README roadmap and not built.
 
 ## Graphify: optional sidecar, never in the write path (not decided)
 

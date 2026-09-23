@@ -28,6 +28,7 @@
     "test": "node --no-warnings=ExperimentalWarning --test test/*.test.ts",
     "seed": "node --no-warnings=ExperimentalWarning scripts/seed-demo.ts",
     "setup": "node --no-warnings=ExperimentalWarning src/setup.ts",
+    "token": "node --no-warnings=ExperimentalWarning scripts/token.ts",
     "bench": "node --no-warnings=ExperimentalWarning bench/run.ts"
   },
   "dependencies": {

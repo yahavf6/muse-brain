@@ -1,6 +1,6 @@
 # Muse Brain: connector brief (for an AI agent)
 
-`<your-brain-url>` and `<your-token>` are placeholders the person sets up themselves: they deploy Muse Brain (`fly deploy` or a DigitalOcean Droplet) with `BRAIN_PUBLIC=1`, then mint a token on the host with `POST /api/token` body `{"action":"mint","agent":"<name>"}`. Ask them for both values; never invent them.
+`<your-brain-url>` and `<your-token>` are placeholders the person sets up themselves: they deploy Muse Brain (`fly deploy` or a DigitalOcean Droplet) with `BRAIN_PUBLIC=1`, then mint a token inside the deployment with `npm run token -- mint <name>` (add `--read-only` to make it read-only). Ask them for both values; never invent them.
 
 You are building a connector to a **typed knowledge graph** (nodes: `thought`, `action`, `rule`, `conclusion`; typed edges between them). It is the person's shared memory across every agent they use. You read it before acting and write to it after.
 

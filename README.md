@@ -21,7 +21,7 @@
 
 ## Deploy
 
-Muse Brain also runs as a container, so it can serve every agent on a team instead of just the machine it's installed on.
+Muse Brain also runs as a container, so it can serve every agent on a team instead of just the machine it's installed on. The image sets `BRAIN_PUBLIC=1` (exactly `1`): the server binds `0.0.0.0`, `/mcp` and `/api/v1/*` accept only a bearer token, and everything else (the graph page, `/api/call`, `/api/install`, `/api/token`) answers only requests from the machine itself. It speaks plain HTTP on port 4747, so TLS has to come from the platform or a proxy in front.
 
 ### Fly.io
 
@@ -29,13 +29,61 @@ Muse Brain also runs as a container, so it can serve every agent on a team inste
 fly launch
 ```
 
-Run from a clone of this repo. `fly launch` picks up the repo's `Dockerfile` and `fly.toml` automatically -- the `brain_data` volume, the `BRAIN_DB`/`BRAIN_LOG_DIR`/`BRAIN_PUBLIC` env vars, and the HTTP service on port 4747 with forced HTTPS are all already in `fly.toml`. Answer the prompts (or `fly deploy` on subsequent pushes) and the DB and logs persist across deploys on the mounted volume.
+Run from a clone of this repo. `fly launch` picks up the repo's `Dockerfile` and `fly.toml` automatically -- the `brain_data` volume, the `BRAIN_DB`/`BRAIN_LOG_DIR`/`BRAIN_PUBLIC`/`BRAIN_TOKENS_FILE` env vars, and the HTTP service on port 4747 with forced HTTPS are all already in `fly.toml`. Answer the prompts (or `fly deploy` on subsequent pushes) and the DB, the logs and the tokens file persist across deploys on the mounted volume.
+
+Mint a token for each agent (see [Tokens](#tokens)):
+
+```bash
+fly ssh console -C "npm run token -- mint grok-bot"
+```
 
 ### DigitalOcean
 
 Create a Droplet from the **Docker on Ubuntu** Marketplace image with a Volume attached, mount the volume at `/mnt/brain_data`, and paste [`.do-marketplace/cloud-init.yaml`](.do-marketplace/cloud-init.yaml) into the Droplet's **User Data** field at creation time -- it starts the container with the volume and env vars wired up. Or skip User Data and SSH in once the Droplet is up to run the same `docker run` line by hand.
 
 This is a Droplet, not the "Deploy to DO" App Platform button, because App Platform's disk is ephemeral and would wipe the database on every redeploy.
+
+Nothing in the cloud-init terminates TLS: put a reverse proxy or a tunnel in front before you give any agent a token, or the token crosses the internet in cleartext. A proxy on the same Droplet must send one of the forwarding headers the server checks (`X-Forwarded-For`, `Forwarded`, `X-Real-IP`, `CF-Connecting-IP`, `Fly-Client-IP`), otherwise its requests look local (see "Status and limits"). The cloud-init also pulls `ghcr.io/yahavf6/muse-brain:latest`, which no CI job publishes yet: build and push the image yourself, or point the `docker run` line at a locally built tag.
+
+Mint a token for each agent (see [Tokens](#tokens)):
+
+```bash
+docker exec muse-brain npm run token -- mint grok-bot
+```
+
+### Tokens
+
+```bash
+npm run token -- mint <agent> [--read-only]   # prints the token once, plus its hash
+npm run token -- list                         # hash, agent, created_at; never the raw token
+npm run token -- revoke <hash>                # the hash from `list`
+```
+
+Run these inside the container, as above; the CLI needs no running server. It must see the server's `BRAIN_TOKENS_FILE` (`/data/tokens.json` in both shipped configs): `docker exec` inherits it, and on Fly, if a freshly minted token is refused, check that the session sees it (`fly ssh console -C env`). The server re-reads the file on every request, so a mint or revoke takes effect with no restart. The `Dockerfile` itself does not set `BRAIN_TOKENS_FILE` (`fly.toml` and the cloud-init do), so a hand-written `docker run` needs `-e BRAIN_TOKENS_FILE=/data/tokens.json` or the tokens vanish with the container.
+
+- One token per agent. The agent name you mint with is stamped on everything that token writes, and access policy is keyed by that name.
+- The token is shown once. The file holds only its sha256, so a lost token cannot be recovered, only revoked and replaced.
+- `--read-only` also upserts an `agent_policy` row for that agent (read on, write off, every project), so it can call `ask`, `search`, `context` and `get` but not `log`, `link`, `update` or `approve_rule`. Without it the token has `full` scope, which includes `approve_rule`. The CLI offers only these two levels; per-token scopes and expiry are on the Roadmap.
+- Policy belongs to the agent name, not the token: minting a second token for the same name shares its policy, and `--read-only` overwrites any project scoping that name had.
+
+### See your deployed graph
+
+The graph page is local-only in public mode (through the public hostname it answers `403 local only`), so copy the database down and open it with a local server:
+
+```bash
+# Fly
+fly ssh sftp get /data/brain.db
+fly ssh sftp get /data/brain.db-wal
+# Droplet (run on the Droplet, then copy the files to your machine)
+docker cp muse-brain:/data/brain.db .
+docker cp muse-brain:/data/brain.db-wal .
+# then, next to the downloaded files
+BRAIN_DB=./brain.db BRAIN_PORT=4748 npm start
+```
+
+Open `http://127.0.0.1:4748` (`BRAIN_PORT` keeps it clear of a local service already on 4747). The database runs in WAL mode, so recent writes live in `brain.db-wal` beside it: copy both files or the graph will look stale. The local server writes to the copy, not to the deployed brain.
+
+A deployed brain is its own graph, separate from the one on your machine, and nothing syncs them. Local hooks and agents keep reading the local `~/.brain/brain.db`. The daily backups the server writes go to `~/.brain/backups` inside the container, not to the volume, so snapshot the volume itself if you need a copy that outlives the container.
 
 ## The thesis
 
@@ -295,6 +343,8 @@ flowchart LR
 | `agent_policies` | every known agent's read/write/project policy, plus the distinct project names | UI only |
 | `set_agent_policy` | upsert one agent's read/write toggles and project scope (`null` = all projects) | UI only |
 
+The 8 non-UI verbs are also `POST /api/v1/<verb>` (REST, same `callVerb()` path), with an OpenAPI 3.1 document at `/api/v1/openapi.json` generated from the same table.
+
 ### Hooks (Claude Code only, everything fails open with exit 0)
 
 | hook | mode | does |
@@ -398,11 +448,45 @@ Verify these two key names against current Cursor and Gemini CLI docs before rel
 { "mcpServers": { "brain": { "command": "npx", "args": ["mcp-remote", "http://127.0.0.1:4747/mcp?agent=claude-desktop"] } } }
 ```
 
+### Connect a cloud agent
+
+These agents run in a vendor's cloud, so they reach a deployed brain (see [Deploy](#deploy)), never `127.0.0.1`. Mint one token per agent first, and use `https://<your-brain-host>` for your deployment's public URL. In public mode identity is the token's agent name and a `?agent=` query param does nothing. The product details below are as reported by vendor docs and forums when checked on 2026-09-23; none of it was tested against a live account, and these products change fast.
+
+**Grok Bot** (SpaceXAI + Cursor, beta since 2026-08-11; not the @grok account on X or grok.com). Bots run on a persistent per-user cloud VM. Tell a Bot in chat: `Add this MCP server: https://<your-brain-host>/mcp`. Some versions have no dedicated settings form for this. Tools appear on the next message, the server then shows under Settings > Plugins > Yours, and you attach it in a chat with `@`. The server must be reachable over the public internet (Streamable HTTP or SSE); localhost does not work. Sources: [Cursor forum: GrokBot custom connectors](https://forum.cursor.com/t/grokbot-custom-connectors/169965), [xAI docs: computer and apps](https://docs.x.ai/grok-bot/computer-and-apps).
+
+Auth is unsettled. Third-party guides describe passing an API key as a custom header when adding the server, so the bearer header (`Authorization: Bearer <token>`) is worth trying; verify it works for you. But a Cursor staff reply dated 2026-09-17 says Grok Bot connectors currently authenticate only via OAuth and that there is no secure place to enter a header secret, not via chat and not via model-visible tool arguments ([source](https://forum.cursor.com/t/grok-bot-custom-mcp-oauth-fails-before-sign-in-redirect-uri-not-allowed/171877)). Muse Brain has bearer tokens only, no OAuth server (see Roadmap), so if Grok Bot stays OAuth-only, OAuth support is the fix and the header path may not work at all. A token you hand a Bot through chat is visible to the model and to the transcript: mint a dedicated token for that Bot, prefer `--read-only`, and revoke it on any doubt. Enterprise Cursor teams can enforce an MCP allowlist; the server URL must be on it.
+
+**Meta Muse** (Meta's consumer personal agent, launched 2026-09-08; runs on Muse Secure VM, where Sentinel approves network egress and connector actions). It has no MCP support. It connects through Connectors: Meta-reviewed directory ones (developers submit at muse.ai/platform; Meta has published no SDK, fees or terms), or a Custom Connector that Muse writes itself when you ask. Meta's help center says "you can ask Muse to create a Custom Connector" and that this "can involve retrieving API information from the service"; credentials go in its Secure Credentials Store, and Meta does not review custom connectors. Sources: [Meta help center](https://www.meta.com/help/artificial-intelligence/1687253048996149/), [Meta research blog on Muse security](https://research.meta.ai/blog/security-and-safety-for-ai-agents-our-approach-with-muse).
+
+Muse Brain gives such a connector what it needs: `POST /api/v1/<verb>` for the 8 non-UI verbs and an OpenAPI 3.1 document at `/api/v1/openapi.json`. The recipe below is what third-party vendors report working; Meta documents only the general Custom Connector flow.
+
+1. Point Muse at [`docs/muse-connector-brief.md`](docs/muse-connector-brief.md), by the raw GitHub URL of your copy of the repo (for the upstream repo, `https://raw.githubusercontent.com/yahavf6/muse-brain/main/docs/muse-connector-brief.md`), or paste its contents into the chat, and ask Muse to build a Custom Connector from it.
+2. The brief has two placeholders, `<your-brain-url>` and `<your-token>`, and tells Muse to ask you for both rather than invent them. Give it the token when it asks (a dedicated one, `--read-only` unless you want Muse to write).
+3. Approve the destination when Sentinel asks.
+
+**Muse Code** (Meta's separate terminal coding agent, not the Muse app) speaks ordinary MCP. In `~/.config/muse/settings.json` (merge into the existing file if there is one), which must contain `"schema_version": 1`:
+
+```json
+{
+  "schema_version": 1,
+  "mcp_servers": {
+    "brain": {
+      "transport": "streamable_http",
+      "url": "https://<your-brain-host>/mcp",
+      "headers": { "Authorization": "Bearer <token>" },
+      "mode": "optional"
+    }
+  }
+}
+```
+
+MCP servers are not sandboxed there. Source: [Muse Code, extending](https://dev.meta.ai/docs/muse-code/extending).
+
 ### Control what each agent reads and writes
 
 Every agent is unrestricted by default: no row for it in the `agent_policy` table means read + write on every project, exactly the behavior every install had before this feature existed. To narrow one down, use the wizard (`npm run setup`) or the **Connect agent** panel's per-agent Read/Write and project chips -- both end up calling the same `set_agent_policy` verb, which upserts one row: `can_read`, `can_write`, and `projects` (`NULL` = every project, a JSON array = only those). A node with no `project` (company-wide) is always visible to a scoped agent's reads; a scoped agent can never *write* one, only its own listed projects.
 
-Enforcement happens in exactly one place, `callVerb()` in `src/verbs.ts`, and only for MCP callers (`scope: 'full'`); the UI's `POST /api/call` runs `scope: 'admin'` and bypasses agent policy entirely, same as it bypasses every other `full`-only rule. A refused read verb (`ask`, `search`, `context`, `get`) or write verb (`log`, `link`, `update`, `approve_rule`) gets back exactly this message (`<agent>` is the caller's own `?agent=` name):
+Enforcement happens in exactly one place, `callVerb()` in `src/verbs.ts`, and only for MCP and REST callers (`scope: 'full'`); the UI's `POST /api/call` runs `scope: 'admin'` and bypasses agent policy entirely, same as it bypasses every other `full`-only rule. A refused read verb (`ask`, `search`, `context`, `get`) or write verb (`log`, `link`, `update`, `approve_rule`) gets back exactly this message (`<agent>` is the caller's own `?agent=` name):
 
 ```
 <agent> has no read access to the brain; the human can change this in Connect agent
@@ -417,7 +501,7 @@ A scoped agent's write outside its allowed projects instead gets:
 
 MCP tool registration mirrors this (`mcpServerFor(read, write)` in `src/server.ts`, one server built per read/write combination): a read-only agent's tool list simply omits `log`/`link`/`update`/`approve_rule`. That's cosmetic on top of the refusal above, not a second enforcement point -- a client that calls a hidden tool by name anyway still gets refused in `callVerb()`.
 
-Identity behind all of this is still just the self-declared `?agent=` query param (see "Status and limits" below): this policy is a well-behaved-agent guardrail, not a security boundary. Any local process can call the MCP endpoint under whatever agent name it likes, or open `~/.brain/brain.db` directly with `sqlite3`.
+Identity behind all of this is still just the self-declared `?agent=` query param (see "Status and limits" below): this policy is a well-behaved-agent guardrail, not a security boundary. Any local process can call the MCP endpoint under whatever agent name it likes, or open `~/.brain/brain.db` directly with `sqlite3`. (With `BRAIN_PUBLIC=1` identity is the bearer token's agent name instead, and the policy row is keyed by that name; `--read-only` on a token is how a cloud agent gets restricted, see Deploy.)
 
 ### Claude Code hooks
 
@@ -474,7 +558,7 @@ BRAIN_JEV_GUARDS=shadow      # shadow | on | off
 BRAIN_GUARDS=off             # kill switch for all guards
 ```
 
-Also read: `BRAIN_PORT` (default 4747), `BRAIN_DB` (default `~/.brain/brain.db`), `BRAIN_LOG_DIR` (default `~/.brain/logs`).
+Also read: `BRAIN_PORT` (default 4747), `BRAIN_DB` (default `~/.brain/brain.db`), `BRAIN_LOG_DIR` (default `~/.brain/logs`), `BRAIN_PUBLIC` (exactly `1` turns on public mode, see Deploy), `BRAIN_TOKENS_FILE` (default `~/.brain/tokens.json`, public mode only).
 
 ## Rules and guards
 
@@ -492,7 +576,13 @@ A rule can carry a `guard` in its props: a regex over the tool name and, optiona
 
 **Next**
 
-- [ ] V2 cloud agents: public HTTPS (Cloudflare Tunnel or a VPS), hashed bearer tokens, a REST + OpenAPI mirror generated from the verb table
+- [ ] V2 cloud agents
+  - [x] Public hosting via Docker: Fly.io (HTTPS terminated by Fly) and a DigitalOcean Droplet (bring your own TLS)
+  - [x] Hashed bearer tokens (`BRAIN_PUBLIC=1`, `npm run token`)
+  - [x] REST + OpenAPI mirror generated from the verb table (`/api/v1/*`)
+  - [ ] OAuth 2.1 (Grok Bot may require it)
+  - [ ] A CI job that publishes the `ghcr.io/yahavf6/muse-brain` image the Droplet cloud-init references
+  - [ ] Per-token scopes and expiry
 - [ ] Hooks for Codex, Cursor and Gemini CLI (today: MCP tools and the skill only)
 - [ ] Migration tool: claude-mem observations and Claude Code `MEMORY.md` files, into typed nodes
 
@@ -512,7 +602,10 @@ Not on the roadmap: an LLM in the write path.
 ## Status and limits
 
 - v1, first commit 2026-09-22, used daily by its author across five agents.
-- Loopback trust model: any local process that sends the right `Host` header can call `/api/call` (admin scope) and `/api/install`. Tokens are a V2 item.
+- Default mode is a loopback trust model: the server binds `127.0.0.1`, and any local process that sends the right `Host` header can call `/api/call` (admin scope) and `/api/install`. There is no other auth, and `?agent=` is a self-declared name.
+- `BRAIN_PUBLIC=1` (the Docker image) puts bearer tokens on `/mcp` and `/api/v1/*` only. Local agents need a token there too, and `?agent=` is ignored.
+- In public mode `/api/call`, `/api/install`, `/api/token` and the graph page stay local-only, enforced by three checks together: the Host/Origin check, a loopback socket address, and no proxy forwarding header (`X-Forwarded-For`, `Forwarded`, `X-Real-IP`, `CF-Connecting-IP`, `Fly-Client-IP`). A reverse proxy on the same machine that connects from loopback, sends none of those headers and rewrites Host would defeat that check and expose the admin routes; agents on the token path are unaffected.
+- A cloud token has `full` scope (never `admin`), which includes `approve_rule`, unless it was minted with `--read-only`. Tokens have no expiry, and the server does no rate limiting. The server speaks plain HTTP; TLS is the platform's or a proxy's job.
 - Guards enforce only in Claude Code, the only client with hooks today.
 - The background service is macOS-only; the server itself runs anywhere Node 24 does.
 - Present-mode labels can overlap on dense clusters.
@@ -522,24 +615,25 @@ Not on the roadmap: an LLM in the write path.
 ## Development
 
 ```bash
-npm test                              # 99 tests, node:test, no framework
+npm test                              # 109 tests, node:test, no framework
 bash hooks/brain-hook.sh --selftest   # hook fixtures for start, pre, mark, stop
 npm run bench                         # synthetic graphs through the real log() verb, 1k / 10k / 100k nodes (1M opt-in via BENCH_SIZES)
 ```
 
 ```
 install.sh    one-command bootstrap: curl | bash into a fresh machine
-src/          server, verbs, schema, judge, install, setup (the connect wizard)
+Dockerfile    the deploy image (fly.toml for Fly.io, .do-marketplace/cloud-init.yaml for a Droplet)
+src/          server, verbs, schema, judge, install, setup (the connect wizard), tokens (public-mode bearer tokens)
 hooks/        brain-hook.sh (Claude Code hooks, --selftest)
 public/       index.html, the 3D graph page, no build step
 skills/brain/ SKILL.md, the agent-facing protocol
-scripts/      seed-demo.ts, service.sh
+scripts/      seed-demo.ts, service.sh, token.ts (mint, list, revoke bearer tokens)
 bench/        run.ts, synthetic-graph benchmarks
-docs/         contracts.md, design.md, media/
-test/         brain.test.ts, install.test.ts, setup.test.ts (node:test)
+docs/         contracts.md, design.md, muse-connector-brief.md, media/
+test/         brain.test.ts, install.test.ts, rest.test.ts, setup.test.ts, tokens.test.ts (node:test)
 ```
 
-Further reading: [`docs/contracts.md`](docs/contracts.md) (the wire format: every verb signature, endpoint, env var), [`docs/design.md`](docs/design.md) (the original internal design note, kept as history), [`skills/brain/SKILL.md`](skills/brain/SKILL.md) (the agent-facing protocol), [`DESIGN.md`](DESIGN.md) (design-system tokens recorded from the built page).
+Further reading: [`docs/contracts.md`](docs/contracts.md) (the wire format: every verb signature, endpoint, env var), [`docs/muse-connector-brief.md`](docs/muse-connector-brief.md) (the agent-facing REST brief for Meta Muse), [`docs/design.md`](docs/design.md) (the original internal design note, kept as history), [`skills/brain/SKILL.md`](skills/brain/SKILL.md) (the agent-facing protocol), [`DESIGN.md`](DESIGN.md) (design-system tokens recorded from the built page).
 
 ## Troubleshooting
 
@@ -548,6 +642,7 @@ Further reading: [`docs/contracts.md`](docs/contracts.md) (the wire format: ever
 - Kill switch for guards without touching rules: set `BRAIN_GUARDS=off` in `~/.brain/.env`, both the hook and the server read it from there.
 - `BRAIN_DB` overrides the database path, useful for the selftest or for pointing at a scratch database.
 - Service not starting: `launchctl print gui/$(id -u)/ai.musebrain.brain` and check `~/.brain/logs/launchd.log`.
+- `401` from `/mcp` or `/api/v1/*` on a deployed brain: the token is missing, revoked or wrong. `npm run token -- list` inside the container shows the hashes the server knows.
 
 ## License
 
