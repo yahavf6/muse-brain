@@ -7,3 +7,9 @@ node_modules
 *.log
 .DS_Store
 .env
+.env.*
+*.bak-brain-*
+tokens.json
+test
+bench
+docs/media

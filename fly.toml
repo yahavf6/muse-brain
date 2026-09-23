@@ -3,10 +3,14 @@
 # Builds from the repo's Dockerfile (no [build] section needed, Fly
 # auto-detects it).
 
+# App names are global on Fly: change "muse-brain" to a unique name, or let
+# `fly launch` pick one and rewrite this line.
 app = "muse-brain"
 primary_region = "iad"
 
 [http_service]
+  # The public listener (BRAIN_PUBLIC_PORT below): /mcp, /api/v1/<verb> and the
+  # OpenAPI document only, bearer tokens. Fly's edge terminates TLS.
   internal_port = 4747
   force_https = true
   auto_stop_machines = false
@@ -14,6 +18,18 @@ primary_region = "iad"
   min_machines_running = 1
   processes = ["app"]
 
+  # Unauthenticated, cheap, and only served by a listener that is up.
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/api/v1/openapi.json"
+
+# Keep exactly ONE machine. A Fly volume pins the app to one machine in one
+# region, and a second machine would get its own empty volume (its own empty
+# database and its own tokens file). Use `fly launch --ha=false`, and if a
+# second machine ever appears, `fly scale count 1`.
 [[mounts]]
   source = "brain_data"
   destination = "/data"
@@ -25,5 +41,8 @@ primary_region = "iad"
 [env]
   BRAIN_DB = "/data/brain.db"
   BRAIN_LOG_DIR = "/data/logs"
-  BRAIN_PUBLIC = "1"
+  # The loopback listener (graph page, admin routes) moves off 4747 because the
+  # public one takes it; nothing routes to 4748 from outside the machine.
+  BRAIN_PORT = "4748"
+  BRAIN_PUBLIC_PORT = "4747"
   BRAIN_TOKENS_FILE = "/data/tokens.json"

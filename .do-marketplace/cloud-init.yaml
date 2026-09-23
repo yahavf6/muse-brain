@@ -8,22 +8,46 @@
 #     /mnt/brain_data -- either by formatting/mounting it yourself after
 #     boot, or by picking the "format & mount" option DO offers at creation
 #     time with mount point /mnt/brain_data. That volume is what makes the
-#     sqlite DB and logs survive a Droplet rebuild/resize.
+#     sqlite DB, logs, tokens and daily backups survive a Droplet
+#     rebuild/resize. The command below refuses to start the container if
+#     nothing is mounted there, so data can never silently land on the
+#     Droplet's root disk.
 #   - Paste this whole file as the Droplet's "User Data" field.
 #
 # This assumes a CI pipeline elsewhere publishes ghcr.io/yahavf6/muse-brain:latest
 # from this repo's Dockerfile -- that pipeline is not part of this repo yet,
 # out of scope here. Until it exists, build and push the image by hand, or
 # point the `docker run` line below at a locally built tag.
+#
+# TLS: the container speaks plain HTTP, so it is published on the Droplet's
+# loopback only (-p 127.0.0.1:4747:4747). Nothing is reachable from the
+# internet, and no bearer token crosses it in cleartext, until you put a TLS
+# proxy on the Droplet in front of 127.0.0.1:4747. Any proxy works: the public
+# listener serves only /mcp, /api/v1/<verb> and the OpenAPI document, and
+# never looks at forwarded headers or Host. With Caddy (certificates issued
+# automatically; needs a DNS A record for the name pointing at the Droplet, and
+# ports 80 and 443 open in the Droplet's firewall):
+#     caddy reverse-proxy --from brain.example.com --to 127.0.0.1:4747
+# or, to keep it running across reboots, a Caddyfile entry
+#     brain.example.com { reverse_proxy 127.0.0.1:4747 }
+# under Caddy's systemd service. Agents then use https://brain.example.com/mcp.
+# Publish the port on the Droplet's public interface only if you accept that
+# tokens travel in cleartext; Docker's published ports also bypass ufw, so use
+# a DigitalOcean Cloud Firewall to restrict who can reach them.
+#
+# Mint a token once the container is up (the container's WORKDIR is /app):
+#     docker exec muse-brain npm run token -- mint <agent> [--read-only]
 
 runcmd:
   - mkdir -p /mnt/brain_data
-  - >
-    docker run -d --name muse-brain --restart unless-stopped
-    -p 4747:4747
-    -v /mnt/brain_data:/data
-    -e BRAIN_PUBLIC=1
-    -e BRAIN_DB=/data/brain.db
-    -e BRAIN_LOG_DIR=/data/logs
-    -e BRAIN_TOKENS_FILE=/data/tokens.json
-    ghcr.io/yahavf6/muse-brain:latest
+  - |
+    mountpoint -q /mnt/brain_data || { echo "brain volume not mounted at /mnt/brain_data" >&2; exit 1; }
+    docker run -d --name muse-brain --restart unless-stopped \
+      -p 127.0.0.1:4747:4747 \
+      -v /mnt/brain_data:/data \
+      -e BRAIN_PORT=4748 \
+      -e BRAIN_PUBLIC_PORT=4747 \
+      -e BRAIN_DB=/data/brain.db \
+      -e BRAIN_LOG_DIR=/data/logs \
+      -e BRAIN_TOKENS_FILE=/data/tokens.json \
+      ghcr.io/yahavf6/muse-brain:latest

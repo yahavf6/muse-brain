@@ -1,6 +1,6 @@
 # Muse Brain: connector brief (for an AI agent)
 
-`<your-brain-url>` and `<your-token>` are placeholders the person sets up themselves: they deploy Muse Brain (`fly deploy` or a DigitalOcean Droplet) with `BRAIN_PUBLIC=1`, then mint a token inside the deployment with `npm run token -- mint <name>` (add `--read-only` to make it read-only). Ask them for both values; never invent them.
+`<your-brain-url>` and `<your-token>` are placeholders the person sets up themselves: `<your-brain-url>` is the HTTPS address of their deployed Muse Brain (its public listener serves this API and nothing else), and `<your-token>` is a token the operator mints inside the deployment with `npm run token -- mint <name>` (add `--read-only` to make it read-only). Ask them for both values; never invent them.
 
 You are building a connector to a **typed knowledge graph** (nodes: `thought`, `action`, `rule`, `conclusion`; typed edges between them). It is the person's shared memory across every agent they use. You read it before acting and write to it after.
 
@@ -15,7 +15,7 @@ Before each task and before any outbound or irreversible call, call ask() with w
 - Base URL: `<your-brain-url>`
 - Auth, on every verb call: `Authorization: Bearer <your-token>`
 - Every verb: `POST <your-brain-url>/api/v1/<verb>`, `Content-Type: application/json`, body = the verb's arguments as one JSON object (`{}` if it has none to send). Response = the verb's result as JSON.
-- OpenAPI 3.1 spec (machine-readable request schemas, no auth needed): `GET <your-brain-url>/api/v1/openapi.json`. Use it to generate the connector's tool definitions. (`/openapi.json` serves the same document but is reachable only from the server itself.)
+- OpenAPI 3.1 spec (machine-readable request schemas, no auth needed): `GET <your-brain-url>/api/v1/openapi.json`. Use it to generate the connector's tool definitions.
 - Request bodies are strict: an unknown field is rejected with 400. Omit fields you have no value for instead of sending `null`.
 - Max request body: 1 MiB.
 
@@ -25,7 +25,7 @@ Errors are always `{"error": "<readable message>"}`:
 |---|---|
 | 400 | Bad arguments, or the operation was refused (message says why; read it, fix the call, retry) |
 | 401 | Missing/invalid token (also sends `WWW-Authenticate: Bearer`). Stop and tell the person. |
-| 404 | Unknown verb (a name not listed below) |
+| 404 | Unknown verb (a name not listed below), or any other path: only `POST /api/v1/<verb>` and the spec above exist here |
 | 413 | Body over 1 MiB |
 
 The person can restrict your token to read-only or to certain projects. A refused call then reads like `<agent> has no write access to the brain; the human can change this in Connect agent`. Do not retry around it; tell the person.
