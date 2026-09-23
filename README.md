@@ -17,7 +17,49 @@
   <img src="docs/media/hero.gif" width="800" alt="Present-mode auto-rotate of the 3D decision graph">
 </p>
 
-[Quickstart](#quickstart) | [How it compares](#how-it-compares) | [Roadmap](#roadmap)
+[Works with](#works-with) | [Quickstart](#quickstart) | [How it compares](#how-it-compares) | [Roadmap](#roadmap)
+
+## Works with
+
+<div align="center">
+
+<table align="center">
+  <tr><th colspan="5">On your machine, one-click install</th></tr>
+  <tr>
+    <td align="center"><a href="#connect-an-agent-one-click"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/dark/claudecode-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/light/claudecode-color.png" width="40" alt="Claude Code"></picture><br><sub>Claude Code</sub></a></td>
+    <td align="center"><a href="#connect-an-agent-one-click"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/dark/claude-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/light/claude-color.png" width="40" alt="Claude Desktop"></picture><br><sub>Claude Desktop</sub></a></td>
+    <td align="center"><a href="#connect-an-agent-one-click"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/dark/codex-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/light/codex-color.png" width="40" alt="Codex CLI + ChatGPT desktop"></picture><br><sub>Codex CLI + ChatGPT desktop</sub></a></td>
+    <td align="center"><a href="#connect-an-agent-one-click"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/dark/cursor.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/light/cursor.png" width="40" alt="Cursor"></picture><br><sub>Cursor</sub></a></td>
+    <td align="center"><a href="#connect-an-agent-one-click"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/dark/geminicli-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/light/geminicli-color.png" width="40" alt="Gemini CLI"></picture><br><sub>Gemini CLI</sub></a></td>
+  </tr>
+</table>
+
+<table align="center">
+  <tr><th colspan="3">Cloud agents, via a deployed brain</th></tr>
+  <tr>
+    <td align="center"><a href="#connect-a-cloud-agent"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/dark/grok.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/light/grok.png" width="40" alt="Grok Bot, experimental"></picture><br><sub>Grok Bot, experimental</sub></a></td>
+    <td align="center"><a href="#connect-a-cloud-agent"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/dark/meta-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/light/meta-color.png" width="40" alt="Meta Muse, REST connector"></picture><br><sub>Meta Muse, REST connector</sub></a></td>
+    <td align="center"><a href="#connect-a-cloud-agent"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/dark/meta-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/light/meta-color.png" width="40" alt="Muse Code, MCP"></picture><br><sub>Muse Code, MCP</sub></a></td>
+  </tr>
+</table>
+
+<table align="center">
+  <tr><th colspan="8">Model-agnostic: any model behind an MCP client</th></tr>
+  <tr>
+    <td align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/dark/claude-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/light/claude-color.png" width="40" alt="Claude"></picture><br><sub>Claude</sub></td>
+    <td align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/dark/openai.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/light/openai.png" width="40" alt="GPT"></picture><br><sub>GPT</sub></td>
+    <td align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/dark/gemini-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/light/gemini-color.png" width="40" alt="Gemini"></picture><br><sub>Gemini</sub></td>
+    <td align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/dark/grok.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/light/grok.png" width="40" alt="Grok"></picture><br><sub>Grok</sub></td>
+    <td align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/dark/meta-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/light/meta-color.png" width="40" alt="Llama"></picture><br><sub>Llama</sub></td>
+    <td align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/dark/mistral-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/light/mistral-color.png" width="40" alt="Mistral"></picture><br><sub>Mistral</sub></td>
+    <td align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/dark/deepseek-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/light/deepseek-color.png" width="40" alt="DeepSeek"></picture><br><sub>DeepSeek</sub></td>
+    <td align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/dark/qwen-color.png"><img src="https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@1.97.1/light/qwen-color.png" width="40" alt="Qwen"></picture><br><sub>Qwen</sub></td>
+  </tr>
+</table>
+
+<sub>No model sits in Muse Brain's write path. Agents reach it over MCP (or REST), so the model behind the agent does not matter, and any other MCP Streamable HTTP client can connect the same way. The cloud-agent setups are documented, not yet tested against a live account, and Grok Bot's auth is unsettled (see [Connect a cloud agent](#connect-a-cloud-agent)).</sub>
+
+</div>
 
 ## Deploy
 
@@ -264,7 +306,7 @@ Nine legal edges, no others:
 5. **Every action carries its why.** A decision without its rejected alternatives is a fact; with them it is knowledge.
 6. **Link everything.** Borrowed from gbrain's framing: an unlinked node is a broken brain. The `log` reply warns when a new node leaves with zero edges.
 7. **Fail open, always.** If the server is down, hooks exit 0, approved rules still load straight from the database file, and work continues uninterrupted.
-8. **One graph, every agent.** Claude Code, Codex, Cursor, Gemini CLI and Claude Desktop write to the same rows, each one stamped with who wrote it.
+8. **One graph, every agent.** Claude Code, Codex, Cursor, Gemini CLI and Claude Desktop write to the same rows, each one stamped with who wrote it; cloud agents can join through a deployed brain (see [Connect a cloud agent](#connect-a-cloud-agent)).
 9. **Every visual encodes a fact.** Shape is kind, wireframe is not yet settled, position is time and connection; nothing on the page is decoration.
 
 ## How it compares
