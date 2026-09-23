@@ -7,13 +7,16 @@ import { join } from 'node:path';
 import http from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
 import { openDb } from '../src/db.ts';
-import { setDb, getDb, callVerb, buildFtsQuery, cleanSqliteError, VERBS } from '../src/verbs.ts';
+import { setDb, getDb, callVerb, buildFtsQuery, cleanSqliteError, VERBS, whoIs } from '../src/verbs.ts';
 import type { Who } from '../src/verbs.ts';
 import { judge } from '../src/judge.ts';
 import { apiCall, apiPre, apiRecall, apiVersion, httpServer, rotateIfNeeded } from '../src/server.ts';
 
 const who: Who = { agent: 'test', scope: 'full' };
 const admin: Who = { agent: 'ui', scope: 'admin' };
+const scoped: Who = { agent: 'scoped', scope: 'full', read: true, write: true, projects: ['alpha'] };
+const readOff: Who = { agent: 'blind', scope: 'full', read: false, write: true, projects: null };
+const writeOff: Who = { agent: 'mute', scope: 'full', read: true, write: false, projects: null };
 const GUARD_LOG = join(TEST_LOG_DIR, 'guard.log');
 
 let tmpDir: string;
@@ -743,6 +746,146 @@ test('HTTP: a body over 1MB -> 413', async () => {
   } finally {
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
   }
+});
+
+// ---- agent policy ----
+
+test('policy: read-off agent cannot ask/search; write-off agent cannot log; admin bypasses both', async () => {
+  await assert.rejects(() => callVerb('ask', { question: 'anything' }, readOff), /blind has no read access to the brain/);
+  await assert.rejects(() => callVerb('search', {}, readOff), /no read access/);
+  await assert.rejects(() => callVerb('log', { kind: 'thought', title: 'T' }, writeOff), /mute has no write access to the brain/);
+  const asAdmin = (who: Who): Who => ({ ...who, scope: 'admin' });
+  await callVerb('search', {}, asAdmin(readOff));
+  await callVerb('log', { kind: 'thought', title: 'admin writes' }, asAdmin(writeOff));
+});
+
+async function seedScoped() {
+  const alpha = (await callVerb('log', { kind: 'thought', title: 'Alpha pricing idea', project: 'alpha' }, who)) as any;
+  const beta = (await callVerb('log', { kind: 'thought', title: 'Beta pricing idea', project: 'beta' }, who)) as any;
+  const global = (await callVerb('log', { kind: 'thought', title: 'Global pricing idea' }, who)) as any;
+  return { alpha: alpha.id as number, beta: beta.id as number, global: global.id as number };
+}
+
+test('policy: scoped search/ask/get/context see own project + company-wide, never another project', async () => {
+  const ids = await seedScoped();
+  const c = (await callVerb('log', { kind: 'conclusion', title: 'Beta pricing lesson', verdict: 'good', project: 'beta', links: [{ type: 'supports', to: ids.beta }] }, who)) as any;
+  for (const args of [{ query: 'pricing' }, {}]) {
+    const hitIds = ((await callVerb('search', args, scoped)) as any).hits.map((h: any) => h.id).sort();
+    assert.deepEqual(hitIds, [ids.alpha, ids.global].sort());
+  }
+  const askIds = ((await callVerb('ask', { question: 'pricing idea' }, scoped)) as any).hits.map((h: any) => h.id);
+  assert.ok(!askIds.includes(ids.beta));
+  const got = (await callVerb('get', { ids: [ids.alpha, ids.beta, c.id] }, scoped)) as any;
+  assert.deepEqual(got.nodes.map((n: any) => n.id), [ids.alpha]);
+  await assert.rejects(() => callVerb('context', { id: ids.beta }, scoped), new RegExp(`#${ids.beta} not found`));
+  // unscoped still sees everything
+  assert.equal(((await callVerb('search', { query: 'pricing' }, who)) as any).hits.length, 4);
+});
+
+test('policy: scoped context() traversal does not walk through a hidden node', async () => {
+  const t = (await callVerb('log', { kind: 'thought', title: 'Alpha root', project: 'alpha' }, who)) as any;
+  const hidden = (await callVerb('log', { kind: 'conclusion', title: 'Beta bridge', verdict: 'good', project: 'beta', links: [{ type: 'supports', to: t.id }] }, who)) as any;
+  const far = (await callVerb('log', { kind: 'thought', title: 'Far alpha', project: 'alpha' }, who)) as any;
+  await callVerb('link', { src: hidden.id, type: 'supports', dst: far.id }, who);
+  const ctx = (await callVerb('context', { id: t.id, hops: 3 }, scoped)) as any;
+  assert.deepEqual(ctx.nodes.map((n: any) => n.id), [t.id]);
+  assert.equal(ctx.edges.length, 0);
+  const full = (await callVerb('context', { id: t.id, hops: 3 }, who)) as any;
+  assert.equal(full.nodes.length, 3);
+  const got = (await callVerb('get', { ids: [far.id] }, scoped)) as any;
+  assert.equal(got.nodes[0].edges_in.length, 0);
+});
+
+test('policy: scoped log() needs an allowed project; update()/link() on out-of-scope nodes are refused; admin bypasses', async () => {
+  const ids = await seedScoped();
+  await assert.rejects(() => callVerb('log', { kind: 'thought', title: 'no project' }, scoped), /scoped may only write to: alpha/);
+  await assert.rejects(() => callVerb('log', { kind: 'thought', title: 'wrong project', project: 'beta' }, scoped), /may only write to/);
+  const ok = (await callVerb('log', { kind: 'thought', title: 'right project', project: 'alpha' }, scoped)) as any;
+  assert.equal(ok.created, true);
+  await assert.rejects(
+    () => callVerb('log', { kind: 'conclusion', title: 'links beta', verdict: 'good', project: 'alpha', links: [{ type: 'supports', to: ids.beta }] }, scoped),
+    new RegExp(`#${ids.beta} not found`),
+  );
+  await assert.rejects(() => callVerb('update', { id: ids.beta, rev: 1, title: 'x' }, scoped), new RegExp(`#${ids.beta} not found`));
+  await assert.rejects(() => callVerb('update', { id: ids.global, rev: 1, title: 'x' }, scoped), /may only write to/);
+  await assert.rejects(() => callVerb('update', { id: ids.alpha, rev: 1, project: 'beta' }, scoped), /may only write to/);
+  await callVerb('update', { id: ids.alpha, rev: 1, title: 'Alpha edited' }, scoped);
+  const concl = (await callVerb('log', { kind: 'conclusion', title: 'alpha lesson', verdict: 'good', project: 'alpha' }, scoped)) as any;
+  await assert.rejects(() => callVerb('link', { src: concl.id, type: 'supports', dst: ids.beta }, scoped), /not found/);
+  const rule = (await callVerb('log', { kind: 'rule', title: 'global rule', why: 'x' }, who)) as any;
+  await assert.rejects(() => callVerb('approve_rule', { id: rule.id, approved_by: 'Y' }, scoped), /may only write to/);
+  const asAdmin: Who = { ...scoped, scope: 'admin' };
+  await callVerb('log', { kind: 'thought', title: 'admin company-wide' }, asAdmin);
+  await callVerb('update', { id: ids.beta, rev: 1, title: 'admin edit' }, asAdmin);
+  await callVerb('link', { src: concl.id, type: 'supports', dst: ids.beta }, asAdmin);
+});
+
+test('policy: link()/log() links need write access to src, and to dst for a mutating edge type; admin bypasses', async () => {
+  const ids = await seedScoped();
+  const concl = (await callVerb('log', { kind: 'conclusion', title: 'Alpha lesson for link test', verdict: 'good', project: 'alpha' }, scoped)) as any;
+  const globalAction = (await callVerb('log', { kind: 'action', title: 'Global action for link test', why: 'x' }, who)) as any;
+
+  // src is company-wide (visible, not writable) -- refused even though dst is fully visible and
+  // the edge type (thought -> conclusion) is otherwise legal.
+  await assert.rejects(
+    () => callVerb('link', { src: ids.global, type: 'derived_from', dst: concl.id }, scoped),
+    /scoped may only write to: alpha/,
+  );
+
+  // src is writable, but a mutating type (supports flips the dst thought's status via a DB
+  // trigger) needs dst writable too -- visibility of the company-wide dst isn't enough.
+  await assert.rejects(
+    () => callVerb('link', { src: concl.id, type: 'supports', dst: ids.global }, scoped),
+    /scoped may only write to: alpha/,
+  );
+
+  // A non-mutating type to the same kind of company-wide, merely-visible destination is fine --
+  // the restriction doesn't over-broaden to every edge type.
+  const ev = (await callVerb('link', { src: concl.id, type: 'evaluates', dst: globalAction.id }, scoped)) as any;
+  assert.equal(ev.ok, true);
+
+  // Same gap in log()'s own links array: a mutating type pointing out of scope is refused too.
+  await assert.rejects(
+    () => callVerb('log', { kind: 'conclusion', title: 'Links out of scope', verdict: 'good', project: 'alpha', links: [{ type: 'supports', to: ids.global }] }, scoped),
+    /scoped may only write to: alpha/,
+  );
+
+  // admin bypasses both the src check and the mutating-dst check.
+  const asAdmin: Who = { ...scoped, scope: 'admin' };
+  await callVerb('link', { src: ids.global, type: 'derived_from', dst: concl.id }, asAdmin);
+  await callVerb('link', { src: concl.id, type: 'supports', dst: ids.global }, asAdmin);
+});
+
+test('policy: whoIs() picks up an agent_policy row; no row = unrestricted', () => {
+  assert.deepEqual(whoIs({ url: '/mcp?agent=nobody' }), { agent: 'nobody', scope: 'full' });
+  getDb().prepare(`INSERT INTO agent_policy (agent, can_read, can_write, projects) VALUES ('codex', 1, 0, '["alpha","beta"]')`).run();
+  assert.deepEqual(whoIs({ url: '/mcp?agent=codex' }), { agent: 'codex', scope: 'full', read: true, write: false, projects: ['alpha', 'beta'] });
+});
+
+test('policy: set_agent_policy upserts and agent_policies lists writers + policy rows + projects', async () => {
+  await callVerb('log', { kind: 'thought', title: 'from test', project: 'alpha' }, who);
+  assert.deepEqual(await callVerb('set_agent_policy', { agent: 'cursor', read: true, write: false, projects: null }, admin), { ok: true });
+  await callVerb('set_agent_policy', { agent: 'cursor', read: false, write: true, projects: ['alpha'] }, admin);
+  const r = (await callVerb('agent_policies', {}, admin)) as any;
+  assert.deepEqual(r.projects, ['alpha']);
+  assert.deepEqual(r.agents.map((a: any) => [a.agent, a.read, a.write, a.projects]), [
+    ['cursor', false, true, ['alpha']],
+    ['test', true, true, null],
+  ]);
+  assert.equal(r.agents[0].last_write, null);
+  assert.equal(typeof r.agents[1].last_write, 'string');
+  assert.equal(whoIs({ url: '/mcp?agent=cursor' }).read, false);
+});
+
+test('policy: /api/recall honours the claude-code policy', async () => {
+  await seedRecallCorpus();
+  const prompt = 'help me fix the pricing page em dash issue please';
+  assert.equal((await apiRecall({ prompt })).hits.length, 2);
+  getDb().prepare("UPDATE node SET project = 'beta' WHERE title LIKE 'Removed em-dash%'").run();
+  await callVerb('set_agent_policy', { agent: 'claude-code', read: true, write: true, projects: ['alpha'] }, admin);
+  assert.deepEqual((await apiRecall({ prompt })).hits.map((h) => h.project), [null]);
+  await callVerb('set_agent_policy', { agent: 'claude-code', read: false, write: true, projects: null }, admin);
+  assert.deepEqual((await apiRecall({ prompt })).hits, []);
 });
 
 // ---- log rotation ----

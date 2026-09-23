@@ -407,7 +407,8 @@ var state = {
   paletteIndex: -1,
   tableOpen: false,
   connectOpen: false,
-  installData: null
+  installData: null,
+  policyData: null
 };
 
 var gNodes = new Map(), gLinks = new Map();
@@ -1078,8 +1079,12 @@ async function openConnectPanel(){
   $('#connectPanel').classList.remove('hidden');
   $('#connectBtn').setAttribute('aria-pressed','true');
   $('#connectBody').innerHTML = '<p class="insp-empty">Loading&hellip;</p>';
-  var data = await fetchJSON('/api/install');
-  state.installData = data;
+  var results = await Promise.all([
+    fetchJSON('/api/install'),
+    callVerbUI('agent_policies', {}).catch(function(){ return null; })
+  ]);
+  state.installData = results[0];
+  state.policyData = results[1];
   renderConnectPanel();
 }
 function closeConnectPanel(){
@@ -1103,16 +1108,40 @@ function renderConnectPanel(){
   html += '<div class="curl-row"><code>'+esc(curl)+'</code><button type="button" class="copy-btn" data-copy-text="'+esc(curl)+'">Copy</button></div>';
   html += '<button type="button" class="btn" id="installAllBtn">Install all</button>';
   (data.clients||[]).forEach(function(c){ html += renderClientRow(c); });
+  var others = otherAgentNames();
+  if(others.length){
+    html += '<p class="insp-sub">Other agents</p>';
+    others.forEach(function(name){
+      var pol = findAgent(state.policyData && state.policyData.agents, name) || {read:true, write:true, projects:null};
+      html += '<div class="client-row" data-client="'+esc(name)+'"><div class="client-top"><span class="client-name mono">'+esc(name)+'</span></div>'+renderPolicyControls(name, pol)+'</div>';
+    });
+  }
   body.innerHTML = html;
   bindConnectHandlers();
 }
+/* Agents that connected/wrote under a name outside the 5 known clients (a custom ?agent=
+   from "Other MCP client", or anything else) -- 'ui' and 'setup' are this UI's own admin
+   identity and the wizard's, not real agents to police. */
+var KNOWN_CLIENT_AGENTS = ['claude-code','codex','cursor','gemini-cli','claude-desktop'];
+function otherAgentNames(){
+  var names = new Set();
+  ((state.policyData && state.policyData.agents) || []).forEach(function(a){ names.add(a.agent); });
+  (state.seen||[]).forEach(function(a){ names.add(a.agent); });
+  (state.agents||[]).forEach(function(a){ names.add(a.agent); });
+  var out = [];
+  names.forEach(function(name){
+    if(KNOWN_CLIENT_AGENTS.indexOf(name)===-1 && name!=='ui' && name!=='setup') out.push(name);
+  });
+  return out.sort();
+}
 function renderClientRow(c){
   if(c.id==='other') return renderOtherRow(c);
-  var seenEntry = findAgent(state.seen, c.id);
-  var writeEntry = findAgent(state.agents, c.id);
+  var seenEntry = findAgent(state.seen, c.agent);
+  var writeEntry = findAgent(state.agents, c.agent);
   var configured = c.installed===true ? 'configured' : (c.installed==='partial' ? 'partial' : 'not configured');
   var configuredCls = c.installed===true ? 'ok' : 'warn';
   var files = (c.files||[]).map(function(f){ return esc(f.path)+(f.ok===false?' (missing)':''); }).join('<br>');
+  var pol = findAgent(state.policyData && state.policyData.agents, c.agent) || {read:true, write:true, projects:null};
   return '<div class="client-row" data-client="'+esc(c.id)+'">'+
     '<div class="client-top"><span class="client-name">'+esc(c.name)+'</span>'+
       '<span class="client-tokens">'+
@@ -1130,7 +1159,23 @@ function renderClientRow(c){
       (c.restart ? '<p class="client-line">'+esc(c.restart)+'</p>' : '')+
     '</details>'+
     '<div class="client-result" data-result-for="'+esc(c.id)+'"></div>'+
+    renderPolicyControls(c.agent, pol)+
   '</div>';
+}
+/* Read/Write + project-scope chips for one agent, reusing the .chip toggle pattern and the
+   .link-row flex layout already used elsewhere in this panel. */
+function renderPolicyControls(agentName, pol){
+  var projects = (state.policyData && state.policyData.projects) || [];
+  var chips = '<button type="button" class="chip" data-policy="read" data-agent="'+esc(agentName)+'" aria-pressed="'+(pol.read?'true':'false')+'"><span class="label">Read</span></button>'+
+    '<button type="button" class="chip" data-policy="write" data-agent="'+esc(agentName)+'" aria-pressed="'+(pol.write?'true':'false')+'"><span class="label">Write</span></button>'+
+    '<button type="button" class="chip" data-policy="project" data-project="" data-agent="'+esc(agentName)+'" aria-pressed="'+(pol.projects===null?'true':'false')+'"><span class="label">All</span></button>'+
+    projects.map(function(p){
+      var pressed = pol.projects!==null && pol.projects.indexOf(p)!==-1;
+      return '<button type="button" class="chip" data-policy="project" data-project="'+esc(p)+'" data-agent="'+esc(agentName)+'" aria-pressed="'+(pressed?'true':'false')+'"><span class="label">'+esc(p)+'</span></button>';
+    }).join('');
+  return '<p class="client-line">Access</p>'+
+    '<div class="link-row" data-policy-agent="'+esc(agentName)+'">'+chips+'</div>'+
+    '<div class="client-result" data-policy-result-for="'+esc(agentName)+'"></div>';
 }
 function renderOtherRow(c){
   return '<div class="client-row other-row" data-client="other">'+
@@ -1185,6 +1230,52 @@ async function installAllClients(){
 $('#connectBtn').addEventListener('click', function(){ state.connectOpen ? closeConnectPanel() : openConnectPanel(); });
 $('#connectBack').addEventListener('click', closeConnectPanel);
 $('#emptyConnectBtn').addEventListener('click', openConnectPanel);
+
+/* Upserts state.policyData.agents in place so a re-render right after a save reflects it
+   without a round trip; next openConnectPanel() still does a full re-fetch. */
+function updateLocalPolicy(next){
+  if(!state.policyData) state.policyData = { agents: [], projects: [] };
+  var idx = state.policyData.agents.findIndex(function(a){ return a.agent===next.agent; });
+  var last_write = idx>=0 ? state.policyData.agents[idx].last_write : null;
+  var entry = { agent: next.agent, read: next.read, write: next.write, projects: next.projects, last_write: last_write };
+  if(idx>=0) state.policyData.agents[idx] = entry; else state.policyData.agents.push(entry);
+}
+async function savePolicy(next){
+  try{
+    await callVerbUI('set_agent_policy', next);
+    updateLocalPolicy(next);
+    renderConnectPanel();
+    var okEl = document.querySelector('[data-policy-result-for="'+CSS.escape(next.agent)+'"]');
+    if(okEl){
+      okEl.classList.remove('err');
+      okEl.textContent = 'saved';
+      setTimeout(function(){ if(okEl.textContent==='saved') okEl.textContent=''; }, 1500);
+    }
+  }catch(e){
+    var errEl = document.querySelector('[data-policy-result-for="'+CSS.escape(next.agent)+'"]');
+    if(errEl){ errEl.textContent = e.message; errEl.classList.add('err'); }
+  }
+}
+$('#connectBody').addEventListener('click', function(ev){
+  var b = ev.target.closest('[data-policy]'); if(!b) return;
+  var agentName = b.getAttribute('data-agent');
+  var kind = b.getAttribute('data-policy');
+  var pol = findAgent(state.policyData && state.policyData.agents, agentName) || {read:true, write:true, projects:null};
+  var next = { agent: agentName, read: pol.read, write: pol.write, projects: pol.projects };
+  if(kind==='read') next.read = !pol.read;
+  else if(kind==='write') next.write = !pol.write;
+  else if(kind==='project'){
+    var proj = b.getAttribute('data-project');
+    if(!proj) next.projects = null;
+    else{
+      var cur = pol.projects===null ? [] : pol.projects.slice();
+      var i = cur.indexOf(proj);
+      if(i===-1) cur.push(proj); else cur.splice(i,1);
+      next.projects = cur;
+    }
+  }
+  savePolicy(next);
+});
 
 /* ---------- top bar controls ---------- */
 function buildTopbarControls(){

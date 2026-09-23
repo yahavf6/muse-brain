@@ -242,6 +242,45 @@ test('installStatus: an empty home reports installed:false for every real client
   rmSync(home, { recursive: true, force: true });
 });
 
+test('installStatus: each client reports its own ?agent= identity, cursor and gemini-cli in particular', () => {
+  const home = tempHome();
+  const ctx = ctxFor(home);
+  const byId = Object.fromEntries(installStatus(ctx).clients.map((c) => [c.id, c]));
+  assert.equal(byId['claude-code'].agent, 'claude-code');
+  assert.equal(byId['codex'].agent, 'codex');
+  assert.equal(byId['cursor'].agent, 'cursor');
+  assert.equal(byId['gemini'].agent, 'gemini-cli');
+  assert.equal(byId['claude-desktop'].agent, 'claude-desktop');
+  assert.equal(byId['other'].agent, null);
+  rmSync(home, { recursive: true, force: true });
+});
+
+test('installStatus: detected is false in a fresh HOME and true once the client dir exists, for both a top-level dotdir and the nested Claude Desktop path', () => {
+  const home = tempHome();
+  const ctx = ctxFor(home);
+  const before = Object.fromEntries(installStatus(ctx).clients.map((c) => [c.id, c]));
+  assert.equal(before['cursor'].detected, false);
+  assert.equal(before['claude-desktop'].detected, false);
+  assert.equal(before['other'].detected, null);
+
+  mkdirSync(join(home, '.cursor'));
+  mkdirSync(join(home, 'Library', 'Application Support', 'Claude'), { recursive: true });
+  const after = Object.fromEntries(installStatus(ctx).clients.map((c) => [c.id, c]));
+  assert.equal(after['cursor'].detected, true);
+  assert.equal(after['claude-desktop'].detected, true);
+  rmSync(home, { recursive: true, force: true });
+});
+
+test('installStatus: detected is independent of installed -- dir exists but brain not wired in yet', () => {
+  const home = tempHome();
+  const ctx = ctxFor(home);
+  mkdirSync(join(home, '.cursor'));
+  const status = installStatus(ctx).clients.find((c) => c.id === 'cursor')!;
+  assert.equal(status.detected, true);
+  assert.equal(status.installed, false);
+  rmSync(home, { recursive: true, force: true });
+});
+
 test('HTTP: GET /api/install and POST /api/install {client:cursor} work end to end with a temp HOME', async () => {
   const home = tempHome();
   const savedHome = process.env.HOME;

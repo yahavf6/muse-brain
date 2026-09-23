@@ -261,7 +261,7 @@ flowchart LR
     SRV -. after commit only .-> JEV["Jev judge (optional)"]
 ```
 
-### Verbs (8 over MCP + the JSON API, 2 UI-only)
+### Verbs (8 over MCP + the JSON API, 4 UI-only)
 
 | verb | what | exposed |
 |---|---|---|
@@ -274,6 +274,8 @@ flowchart LR
 | `update` | change title, why, status, confidence, props or project with a `rev` check (verdict and guard are admin-only) | MCP + API |
 | `approve_rule` | proposed to approved, with `approved_by`; only after a human said so | MCP + API |
 | `delete_node`, `delete_edge` | hard delete | UI only, never an MCP tool; agents cannot delete |
+| `agent_policies` | every known agent's read/write/project policy, plus the distinct project names | UI only |
+| `set_agent_policy` | upsert one agent's read/write toggles and project scope (`null` = all projects) | UI only |
 
 ### Hooks (Claude Code only, everything fails open with exit 0)
 
@@ -291,13 +293,41 @@ flowchart LR
 
 ## Quickstart
 
+### One-command install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yahavf6/muse-brain/main/install.sh | bash
+```
+
+Preflights `git`/`curl`/`sqlite3`/`jq`/`node>=24` (offers `brew install` for a missing `jq` or `node`), clones or updates `~/.muse-brain` (override `MUSE_BRAIN_DIR`/`MUSE_BRAIN_REPO`), runs `npm ci`, installs the macOS launchd service (`--no-service` to skip; Linux prints manual `npm start` guidance instead), then runs the connect wizard (`node src/setup.ts`, also reachable as `npm run setup` from inside a checkout). The wizard detects which of the 5 clients are on this machine and, with one `Enter`, connects all of them with read + write access on every project -- or walks each one's access individually. A shortened, illustrative run:
+
+```
+Server: reachable at http://127.0.0.1:4747 (52 nodes, 2 agents seen).
+
+Claude Code: found, not connected
+Codex CLI + ChatGPT desktop: found, not connected
+
+Connect the 2 found agent(s) with read + write on all projects? [Y/n]
+Claude Code: 3 file(s) written, 1 backup(s).
+Codex CLI + ChatGPT desktop: 3 file(s) written.
+
+Files changed: /Users/you/.claude.json, /Users/you/.claude/settings.json, /Users/you/.claude/skills/brain, /Users/you/.codex/config.toml, /Users/you/.codex/AGENTS.md, /Users/you/.agents/skills/brain
+Backups: /Users/you/.claude.json.bak-brain-20260923-101500
+Start a new session in each connected agent for changes to take effect.
+See http://127.0.0.1:4747/ -- Connect agent panel -- to change access later.
+```
+
+Answering `n` instead walks each detected client one at a time, asking `<name>: access -- [RW] read+write, r = read-only, s = skip (no access)` and, for anything but skip, `<name>: projects -- Enter for all, or a comma-separated list` -- see "Control what each agent reads and writes" below.
+
 ### Requirements
 
 - macOS for the background service (`launchd`); the server itself runs anywhere Node 24 does
 - Node >= 24 on `PATH` (`node:sqlite`, type stripping, `process.loadEnvFile`)
 - `sqlite3`, `jq`, `curl` on `PATH`
 
-### Run it
+### Run it, by hand
+
+Skip the script above and do each step yourself:
 
 ```bash
 git clone https://github.com/yahavf6/muse-brain.git && cd muse-brain
@@ -305,7 +335,7 @@ npm install
 npm start
 ```
 
-Open `http://127.0.0.1:4747`. `npm start` runs `src/server.ts` directly: no build step.
+Open `http://127.0.0.1:4747`. `npm start` runs `src/server.ts` directly: no build step. Then wire up an agent below, or run the wizard yourself with `npm run setup`.
 
 ### See it with data
 
@@ -317,7 +347,7 @@ Writes a fictional B2B SaaS story ("Lumen"): a pricing toggle, an email queue mi
 
 ### Connect an agent, one click
 
-Open the page, click **Connect agent**, then **Install** next to a client. It writes that client's MCP config file (Claude Code's `~/.claude.json`, Codex's `~/.codex/config.toml`, Cursor's `~/.cursor/mcp.json`, Gemini CLI's `~/.gemini/settings.json`, Claude Desktop's config via `mcp-remote`). For Claude Code it also writes the five hook groups into `~/.claude/settings.json` and a `~/.claude/skills/brain` symlink. For Codex it also writes a `~/.agents/skills/brain` symlink and a short "Company brain" block appended to `~/.codex/AGENTS.md`. For Gemini CLI it also appends that same block to `~/.gemini/GEMINI.md`. It backs up any file it touches first as `<file>.bak-brain-<timestamp>`. A client that is already wired up is left untouched: no write, no backup.
+The wizard above (`npm run setup`) already does this for every detected client. To add one later, or straight from the page: open it, click **Connect agent**, then **Install** next to a client. It writes that client's MCP config file (Claude Code's `~/.claude.json`, Codex's `~/.codex/config.toml`, Cursor's `~/.cursor/mcp.json`, Gemini CLI's `~/.gemini/settings.json`, Claude Desktop's config via `mcp-remote`). For Claude Code it also writes the five hook groups into `~/.claude/settings.json` and a `~/.claude/skills/brain` symlink. For Codex it also writes a `~/.agents/skills/brain` symlink and a short "Company brain" block appended to `~/.codex/AGENTS.md`. For Gemini CLI it also appends that same block to `~/.gemini/GEMINI.md`. It backs up any file it touches first as `<file>.bak-brain-<timestamp>`. A client that is already wired up is left untouched: no write, no backup.
 
 ### Connect an agent, by hand
 
@@ -349,6 +379,27 @@ Verify these two key names against current Cursor and Gemini CLI docs before rel
 ```json
 { "mcpServers": { "brain": { "command": "npx", "args": ["mcp-remote", "http://127.0.0.1:4747/mcp?agent=claude-desktop"] } } }
 ```
+
+### Control what each agent reads and writes
+
+Every agent is unrestricted by default: no row for it in the `agent_policy` table means read + write on every project, exactly the behavior every install had before this feature existed. To narrow one down, use the wizard (`npm run setup`) or the **Connect agent** panel's per-agent Read/Write and project chips -- both end up calling the same `set_agent_policy` verb, which upserts one row: `can_read`, `can_write`, and `projects` (`NULL` = every project, a JSON array = only those). A node with no `project` (company-wide) is always visible to a scoped agent's reads; a scoped agent can never *write* one, only its own listed projects.
+
+Enforcement happens in exactly one place, `callVerb()` in `src/verbs.ts`, and only for MCP callers (`scope: 'full'`); the UI's `POST /api/call` runs `scope: 'admin'` and bypasses agent policy entirely, same as it bypasses every other `full`-only rule. A refused read verb (`ask`, `search`, `context`, `get`) or write verb (`log`, `link`, `update`, `approve_rule`) gets back exactly this message (`<agent>` is the caller's own `?agent=` name):
+
+```
+<agent> has no read access to the brain; the human can change this in Connect agent
+<agent> has no write access to the brain; the human can change this in Connect agent
+```
+
+A scoped agent's write outside its allowed projects instead gets:
+
+```
+<agent> may only write to: <project>, <project>
+```
+
+MCP tool registration mirrors this (`mcpServerFor(read, write)` in `src/server.ts`, one server built per read/write combination): a read-only agent's tool list simply omits `log`/`link`/`update`/`approve_rule`. That's cosmetic on top of the refusal above, not a second enforcement point -- a client that calls a hidden tool by name anyway still gets refused in `callVerb()`.
+
+Identity behind all of this is still just the self-declared `?agent=` query param (see "Status and limits" below): this policy is a well-behaved-agent guardrail, not a security boundary. Any local process can call the MCP endpoint under whatever agent name it likes, or open `~/.brain/brain.db` directly with `sqlite3`.
 
 ### Claude Code hooks
 
@@ -448,24 +499,26 @@ Not on the roadmap: an LLM in the write path.
 - The background service is macOS-only; the server itself runs anywhere Node 24 does.
 - Present-mode labels can overlap on dense clusters.
 - A hard delete from the page does not undo trigger side effects that already happened (for example, a rule this node had retired via `supersedes` stays retired).
+- Per-agent read/write/project policy (see "Control what each agent reads and writes") sits on top of the self-declared `?agent=` identity above, not underneath it -- it narrows what a well-behaved agent does, it does not stop a differently-identified or raw-SQL caller.
 
 ## Development
 
 ```bash
-npm test                              # 85 tests, node:test, no framework
+npm test                              # 99 tests, node:test, no framework
 bash hooks/brain-hook.sh --selftest   # hook fixtures for start, pre, mark, stop
 npm run bench                         # synthetic graphs through the real log() verb, 1k / 10k / 100k nodes (1M opt-in via BENCH_SIZES)
 ```
 
 ```
-src/          server, verbs, schema, judge, install
+install.sh    one-command bootstrap: curl | bash into a fresh machine
+src/          server, verbs, schema, judge, install, setup (the connect wizard)
 hooks/        brain-hook.sh (Claude Code hooks, --selftest)
 public/       index.html, the 3D graph page, no build step
 skills/brain/ SKILL.md, the agent-facing protocol
 scripts/      seed-demo.ts, service.sh
 bench/        run.ts, synthetic-graph benchmarks
 docs/         contracts.md, design.md, media/
-test/         brain.test.ts, install.test.ts (node:test)
+test/         brain.test.ts, install.test.ts, setup.test.ts (node:test)
 ```
 
 Further reading: [`docs/contracts.md`](docs/contracts.md) (the wire format: every verb signature, endpoint, env var), [`docs/design.md`](docs/design.md) (the original internal design note, kept as history), [`skills/brain/SKILL.md`](skills/brain/SKILL.md) (the agent-facing protocol), [`DESIGN.md`](DESIGN.md) (design-system tokens recorded from the built page).

@@ -48,6 +48,16 @@ CREATE TABLE IF NOT EXISTS node_file (
   PRIMARY KEY (path, node_id)
 ) STRICT, WITHOUT ROWID;
 
+-- Per-agent access policy, enforced in callVerb() (src/verbs.ts) for scope 'full' callers.
+-- No row = unrestricted (read + write, every project).
+CREATE TABLE IF NOT EXISTS agent_policy (
+  agent TEXT PRIMARY KEY,
+  can_read  INTEGER NOT NULL DEFAULT 1 CHECK (can_read IN (0,1)),
+  can_write INTEGER NOT NULL DEFAULT 1 CHECK (can_write IN (0,1)),
+  projects  TEXT CHECK (projects IS NULL OR json_valid(projects)),  -- NULL = all; JSON array of project names = only these
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+) STRICT;
+
 CREATE INDEX IF NOT EXISTS rule_live ON node(project) WHERE kind='rule' AND status='approved' AND valid_to IS NULL;
 -- footer()'s outcome-gate nudge (src/verbs.ts) filters open actions by created_at < cutoff;
 -- without this, that query does a full SCAN node on every log/ask/search/get/update call.

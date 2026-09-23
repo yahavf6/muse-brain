@@ -12,7 +12,7 @@ type WriteOutcome =
   | { status: 'error'; error: string; backupPath?: string };
 
 type ClientFile = { path: string; checkInstalled: () => boolean; doWrite: () => WriteOutcome };
-type Client = { id: string; name: string; files: ClientFile[]; snippet: string; gets: string; restart: string };
+type Client = { id: string; name: string; agent: string; detect: () => boolean; files: ClientFile[]; snippet: string; gets: string; restart: string };
 
 // ---- low-level write helpers (backup + atomic write, shared by every file kind below) ----
 
@@ -253,6 +253,8 @@ function buildClaudeCode(ctx: InstallCtx): Client {
   return {
     id: 'claude-code',
     name: 'Claude Code',
+    agent: 'claude-code',
+    detect: () => existsSync(join(ctx.home, '.claude')),
     files: [
       {
         path: configPath,
@@ -279,6 +281,8 @@ function buildCodex(ctx: InstallCtx): Client {
   return {
     id: 'codex',
     name: 'Codex CLI + ChatGPT desktop',
+    agent: 'codex',
+    detect: () => existsSync(join(ctx.home, '.codex')),
     files: [
       {
         path: configPath,
@@ -309,6 +313,8 @@ function buildCursor(ctx: InstallCtx): Client {
   return {
     id: 'cursor',
     name: 'Cursor',
+    agent: 'cursor',
+    detect: () => existsSync(join(ctx.home, '.cursor')),
     files: [
       {
         path: configPath,
@@ -334,6 +340,8 @@ function buildGemini(ctx: InstallCtx): Client {
   return {
     id: 'gemini',
     name: 'Gemini CLI',
+    agent: 'gemini-cli',
+    detect: () => existsSync(join(ctx.home, '.gemini')),
     files: [
       {
         path: configPath,
@@ -367,6 +375,8 @@ function buildClaudeDesktop(ctx: InstallCtx): Client {
   return {
     id: 'claude-desktop',
     name: 'Claude Desktop',
+    agent: 'claude-desktop',
+    detect: () => existsSync(join(ctx.home, 'Library', 'Application Support', 'Claude')),
     files: [
       {
         path: configPath,
@@ -403,11 +413,13 @@ export function installStatus(ctx: InstallCtx) {
     const files = c.files.map((f) => ({ path: f.path, ok: f.checkInstalled() }));
     const okCount = files.filter((f) => f.ok).length;
     const installed: boolean | 'partial' = okCount === files.length ? true : okCount === 0 ? false : 'partial';
-    return { id: c.id, name: c.name, installed, files, snippet: c.snippet, gets: c.gets, restart: c.restart };
+    return { id: c.id, name: c.name, agent: c.agent, detected: c.detect(), installed, files, snippet: c.snippet, gets: c.gets, restart: c.restart };
   });
   clients.push({
     id: 'other',
     name: 'Other MCP client',
+    agent: null as any,
+    detected: null as any,
     installed: null as any,
     files: [],
     snippet: `Streamable HTTP MCP at ${ctx.baseUrl}/mcp?agent=<your-agent-name>`,
