@@ -52,6 +52,46 @@ offer_brew() {
   return 1
 }
 
+# with_spinner <label> <fn> -- runs <fn> (a shell function, backgrounded) and animates a braille
+# spinner on stdout while it runs, then a done/failed line. Skipped -- plain "label... done/failed"
+# lines instead -- when stdout isn't a real terminal ([ -t 1 ], the textbook check for "should I
+# draw on this fd", distinct from tty_available's "/dev/tty is readable for input" above), so a
+# captured log (CI, `| tee`) never fills with \r-redrawn escape junk. The wrapped function's real
+# exit status always propagates either way, so `set -e` still catches a genuine failure -- `wait`
+# and the plain call are both inside an `if` specifically so their own nonzero status, captured
+# on purpose, doesn't trip `set -e` before this function gets to report it and return it itself.
+SPIN_FRAMES=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+with_spinner() {
+  local label="$1" fn="$2" rc=0
+  if [ ! -t 1 ]; then
+    echo "$label..."
+    if "$fn"; then rc=0; else rc=$?; fi
+    if [ $rc -eq 0 ]; then echo "$label: done"; else echo "$label: failed"; fi
+    return $rc
+  fi
+  # git/npm/launchctl all print their own progress -- capture it instead of letting it interleave
+  # with the \r-redrawn spinner line; dump it on failure so a real error is never hidden, only
+  # deferred past the spinner.
+  local log
+  log="$(mktemp)"
+  "$fn" >"$log" 2>&1 &
+  local pid=$! i=0
+  while kill -0 "$pid" 2>/dev/null; do
+    printf '\r%s %s...' "${SPIN_FRAMES[$((i % ${#SPIN_FRAMES[@]}))]}" "$label"
+    i=$((i + 1))
+    sleep 0.1
+  done
+  if wait "$pid"; then rc=0; else rc=$?; fi
+  if [ $rc -eq 0 ]; then
+    printf '\r\033[K\xe2\x9c\x93 %s\n' "$label"
+  else
+    printf '\r\033[K\xe2\x9c\x97 %s failed\n' "$label"
+    cat "$log" >&2
+  fi
+  rm -f "$log"
+  return $rc
+}
+
 fixit() {
   local name="$1"
   echo "error: $name not found." >&2
@@ -96,23 +136,27 @@ fi
 
 if [ -z "$REPO_DIR" ]; then
   if [ -d "$MUSE_BRAIN_DIR/.git" ]; then
-    (cd "$MUSE_BRAIN_DIR" && git pull --ff-only)
+    step_update_repo() { cd "$MUSE_BRAIN_DIR" && git pull --ff-only; }
+    with_spinner "Updating muse-brain" step_update_repo
   else
-    git clone "$MUSE_BRAIN_REPO" "$MUSE_BRAIN_DIR"
+    step_clone_repo() { git clone "$MUSE_BRAIN_REPO" "$MUSE_BRAIN_DIR"; }
+    with_spinner "Cloning muse-brain" step_clone_repo
   fi
   REPO_DIR="$MUSE_BRAIN_DIR"
 fi
 
 # ---- install deps ------------------------------------------------------------
 
-(cd "$REPO_DIR" && npm ci --omit=dev --no-audit --no-fund)
+step_install_deps() { cd "$REPO_DIR" && npm ci --omit=dev --no-audit --no-fund; }
+with_spinner "Installing dependencies" step_install_deps
 
 # ---- service ------------------------------------------------------------------
 
 SERVICE_STARTED=
 if [ -z "$NO_SERVICE" ]; then
   if [ "$(uname -s)" = "Darwin" ]; then
-    (cd "$REPO_DIR" && bash scripts/service.sh install)
+    step_install_service() { cd "$REPO_DIR" && bash scripts/service.sh install; }
+    with_spinner "Installing the background service" step_install_service
     SERVICE_STARTED=1
   else
     echo "Linux service isn't automated yet -- start the server yourself: cd $REPO_DIR && npm start"
