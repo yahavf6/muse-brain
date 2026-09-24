@@ -1,4 +1,4 @@
-<h1 align="center">Muse Brain</h1>
+<h1 align="center">🧠 Muse Brain</h1>
 
 <p align="center">
   <em>Your coding agents forget why things were done and repeat mistakes you already fixed. Muse Brain is one shared decision log for Claude Code, Codex, Cursor, Gemini CLI and Claude Desktop: agents are told to check it before they act and record why after (Claude Code does both through hooks), and, in Claude Code, an approved rule with a guard blocks the tool call.</em>
