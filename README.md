@@ -1,7 +1,7 @@
 <h1 align="center">Muse Brain</h1>
 
 <p align="center">
-  <em>A brain for your agents, not a memory. Every decision with its why, every rule approved by a human, every outcome linked back to what caused it.</em>
+  <em>Your coding agents forget why things were done and repeat mistakes you already fixed. Muse Brain is one shared decision log for Claude Code, Codex, Cursor, Gemini CLI and Claude Desktop: agents are told to check it before they act and record why after (Claude Code does both through hooks), and, in Claude Code, an approved rule with a guard blocks the tool call.</em>
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
   <img src="docs/media/hero.gif" width="800" alt="Present-mode auto-rotate of the 3D decision graph">
 </p>
 
-[Works with](#works-with) | [Quickstart](#quickstart) | [How it compares](#how-it-compares) | [Roadmap](#roadmap)
+[Works with](#works-with) | [Why use it](#why-use-it) | [Quickstart](#quickstart) | [Deploy](#deploy) | [How it compares](#how-it-compares) | [Roadmap](#roadmap)
 
 ## Works with
 
@@ -61,100 +61,25 @@
 
 </div>
 
-## Deploy
+## Why use it
 
-Muse Brain also runs as a container, so it can serve every agent on a team instead of just the machine it's installed on. It is still one process, now with two listeners:
+| Without it | With it |
+|---|---|
+| You tell the agent "never touch X". Next session it touches X. CLAUDE.md is a suggestion it can skip. | You approve the rule once, with a guard pattern. Next time an Edit or Write matches it, the Claude Code hook denies the call before it runs. |
+| Codex has no idea what Claude decided yesterday. | One graph, every agent. Each row says who wrote it. |
+| `git log` says what changed. Not why, not what was rejected. | `ask` returns matching decisions with their why, rejected alternatives and linked outcomes. |
+| Decisions ship and nobody checks if they worked. | A conclusion ties the outcome to the action. Actions with no outcome after 14 days get flagged to the agent and in the Needs-you panel. |
 
-- **Loopback listener**: `BRAIN_PORT` (default 4747) on `127.0.0.1`, always on. It is exactly what runs on your machine: every route (the graph page, `/api/call`, `/api/install`, `/api/recall`, `/api/pre`), Host/Origin validation, `?agent=` identity. Public mode does not touch it, so local agents, hooks, the graph page and the installer keep working unchanged.
-- **Public listener**: only when `BRAIN_PUBLIC_PORT` is set (empty or unset means off; it must differ from `BRAIN_PORT`, and an invalid value stops the server at startup). It binds `BRAIN_HOST` (default `0.0.0.0`) and serves only `/mcp`, `POST /api/v1/<verb>` and `GET /api/v1/openapi.json`. Everything else answers `404` there before any processing, whatever the headers. Identity is `Authorization: Bearer <token>` only (a missing or invalid token gets `401` with `WWW-Authenticate: Bearer`), and `?agent=` is ignored.
+**You probably don't need it** if you use one agent, on one small repo, and never switch tools. CLAUDE.md plus git log covers that.
 
-The image sets `BRAIN_PORT=4748` and `BRAIN_PUBLIC_PORT=4747`: the public listener takes the one exposed port, and the loopback listener stays inside the container. The public listener speaks plain HTTP on that port, so TLS has to come from the platform or a proxy in front.
+## Your part
 
-### Fly.io
+After install, almost nothing. The agents do the asking and logging (automatically in Claude Code, by instruction elsewhere).
 
-```bash
-fly launch --ha=false
-```
-
-Run from a clone of this repo. `fly launch` picks up the repo's `Dockerfile` and `fly.toml` automatically -- the `brain_data` volume, the `BRAIN_DB`/`BRAIN_LOG_DIR`/`BRAIN_PORT`/`BRAIN_PUBLIC_PORT`/`BRAIN_TOKENS_FILE` env vars, the HTTP service on port 4747 with forced HTTPS, and an HTTP health check on `GET /api/v1/openapi.json` are all already in `fly.toml`. Answer the prompts (or `fly deploy` on subsequent pushes) and the DB, the logs, the tokens file and the daily backups persist across deploys on the mounted volume.
-
-Two things to do by hand. `app = "muse-brain"` in `fly.toml` must become a name nobody else has (or let `fly launch` rename it). And keep exactly one machine: a Fly volume pins the app to one machine in one region, and a second machine would get its own empty volume, so its own empty database and its own tokens (`fly launch --ha=false` above, `fly scale count 1` if a second one ever appears).
-
-Mint a token for each agent (see [Tokens](#tokens)):
-
-```bash
-fly ssh console -C "sh -c 'cd /app && npm run token -- mint grok-bot'"
-```
-
-### DigitalOcean
-
-Create a Droplet from the **Docker on Ubuntu** Marketplace image with a Volume attached, mount the volume at `/mnt/brain_data`, and paste [`.do-marketplace/cloud-init.yaml`](.do-marketplace/cloud-init.yaml) into the Droplet's **User Data** field at creation time -- it starts the container with the volume and env vars wired up. Or skip User Data and SSH in once the Droplet is up to run the same `docker run` line by hand. The cloud-init refuses to start the container if nothing is mounted at `/mnt/brain_data`, so the data can never silently land on the Droplet's root disk.
-
-This is a Droplet, not the "Deploy to DO" App Platform button, because App Platform's disk is ephemeral and would wipe the database on every redeploy.
-
-Nothing in the cloud-init terminates TLS, so it publishes the container on the Droplet's loopback only (`-p 127.0.0.1:4747:4747`): nothing is reachable from the internet, and no token crosses it in cleartext, until you put a TLS proxy on the Droplet in front of `127.0.0.1:4747`. With Caddy, which fetches certificates itself (the name needs a DNS record pointing at the Droplet, and ports 80 and 443 open in its firewall):
-
-```bash
-caddy reverse-proxy --from brain.example.com --to 127.0.0.1:4747
-```
-
-Agents then use `https://brain.example.com/mcp`. Any proxy works, nginx included: the public listener never consults forwarded headers or `Host`. If you would rather publish the port directly, change the cloud-init to `-p 4747:4747`; tokens then travel in cleartext until TLS is added, so restrict who can reach the port with a DigitalOcean Cloud Firewall. The cloud-init also pulls `ghcr.io/yahavf6/muse-brain:latest`, which no CI job publishes yet: build and push the image yourself, or point the `docker run` line at a locally built tag.
-
-Mint a token for each agent (see [Tokens](#tokens)):
-
-```bash
-docker exec muse-brain npm run token -- mint grok-bot
-```
-
-### From your Mac
-
-No hosting needed: the local service can open a public listener too. Add these to `~/.brain/.env` (the server loads that file at startup; see [Env file](#env-file)):
-
-```
-BRAIN_PUBLIC_PORT=4748
-BRAIN_HOST=127.0.0.1    # optional, recommended for a tunnel: only the tunnel can reach the listener
-```
-
-Then `bash scripts/service.sh restart`, mint a token with `npm run token -- mint <agent>`, and point a tunnel at the public listener:
-
-```bash
-cloudflared tunnel --url http://127.0.0.1:4748
-```
-
-Give agents the HTTPS URL it prints plus `/mcp`. Local agents keep using `127.0.0.1:4747` with no token. `cloudflared` is not shipped or tested here, and the tunnel only works while the Mac is awake and `cloudflared` is running. Without `BRAIN_HOST=127.0.0.1` the listener binds `0.0.0.0` and is reachable from your network as well, over plain HTTP.
-
-### Tokens
-
-```bash
-npm run token -- mint <agent> [--read-only]   # prints the token once, plus its hash
-npm run token -- list                         # hash, agent, created_at; never the raw token
-npm run token -- revoke <hash>                # the hash from `list`
-```
-
-This is the only way to manage tokens. Run it inside the container, as above; the CLI needs no running server, and it reads `~/.brain/.env` the same way the server does. It must see the server's `BRAIN_TOKENS_FILE` (`/data/tokens.json`, set by the `Dockerfile` and again by `fly.toml` and the cloud-init; `~/.brain/tokens.json` when unset): `docker exec` inherits it, and on Fly, if a freshly minted token is refused, check that the session sees it (`fly ssh console -C env`), because a CLI that writes a different file mints tokens the server never reads. The server re-reads the file on every request, so a mint or revoke takes effect with no restart.
-
-- One token per agent. The agent name you mint with becomes the `agent` on everything that token writes (not the `approved_by` of an approval, which is whatever the caller sends), and access policy is keyed by that name.
-- The token is shown once. The file holds only its sha256, so a lost token cannot be recovered, only revoked and replaced. It is written atomically and always ends up mode `0600`; a malformed file is never rewritten (`mint` and `revoke` fail, and the server treats every token as invalid until you fix or move it aside).
-- `--read-only` also upserts an `agent_policy` row for that agent (read on, write off, every project), so it can call `ask`, `search`, `context` and `get` but not `log`, `link`, `update` or `approve_rule`. Without it the token has `full` scope, which includes `approve_rule`. The CLI offers only these two levels; per-token scopes and expiry are on the Roadmap.
-- Policy belongs to the agent name, not the token: minting a second token for the same name shares its policy, and `--read-only` overwrites any project scoping that name had, back to all projects.
-
-### See your deployed graph
-
-The graph page is served only on the loopback listener, which the container never exposes (through the public URL it is a `404`), so copy a snapshot of the database down and open it with a local server. The server writes its own consistent snapshot to `<dir of BRAIN_DB>/backups/brain-YYYY-MM-DD.db`, which is `/data/backups/` on the volume: once at startup and then every 6 hours, but at most one file per UTC day (the first run of the day wins), so the newest snapshot can be a day old or a little more. Copy that, not the live `brain.db` and `brain.db-wal`, which you could catch as an inconsistent pair:
-
-```bash
-# Fly (list the snapshots, then fetch one)
-fly ssh console -C "ls /data/backups"
-fly ssh sftp get /data/backups/brain-2026-09-23.db copy.db
-# Droplet, on the Droplet, then copy copy.db to your machine
-docker cp muse-brain:/data/backups/brain-2026-09-23.db copy.db
-# then, next to the downloaded file
-BRAIN_DB=./copy.db BRAIN_PORT=4748 npm start
-```
-
-Open `http://127.0.0.1:4748` (`BRAIN_PORT` keeps it clear of a local service already on 4747; if your `~/.brain/.env` sets `BRAIN_PUBLIC_PORT=4748` for the Mac option, add `BRAIN_PUBLIC_PORT=` to the command to switch that listener off for this run). The local server writes to the copy, not to the deployed brain, and it puts its own `backups/` folder next to the copy.
-
-A deployed brain is its own graph, separate from the one on your machine, and nothing syncs them. Local hooks and agents keep reading the local `~/.brain/brain.db`. The backups live on the volume, so they survive the container being recreated, but they are the same disk as the database: snapshot the volume itself (or copy the backups off) if you need a copy that survives losing it.
+- **When an agent proposes a rule**, it shows up in the Needs-you panel on the graph page. Click Approve, or say "approve rule 43" in chat. Until then it binds nothing.
+- **When a guard blocks something**, the agent sees:
+  `Blocked by brain rule #43: Never change a default sort order without an A/B test. Fix the input and retry. If the rule is wrong, tell the human; do not work around it.`
+- **When you want to look**, open http://127.0.0.1:4747 (local install): the decisions, who made them, and what came of them.
 
 ## The thesis
 
@@ -176,6 +101,8 @@ Agents propose, humans approve; no model ever writes the record.
 The author ran claude-mem for months before building this. Its store reached 101,485 observations, and because that shape has no outcome edges, not one of them could ever be linked back to the decision it came from. Closing that gap is what this project exists to do.
 
 ## Sixty seconds in the brain
+
+Where this ends: an agent tries to edit `defaultSort` and the call is denied, citing a rule a human approved after the last attempt went badly. Here is how it gets there.
 
 An agent is about to touch the dashboard. Before it does, it asks:
 
@@ -639,6 +566,101 @@ Also read, from this file or the process environment (a variable already set in 
 | `BRAIN_DB` | `~/.brain/brain.db` | the database; the daily snapshots go to `backups/` next to it |
 | `BRAIN_LOG_DIR` | `~/.brain/logs` | the server's `server.log` and `guard.log` (the hook always logs to `~/.brain/logs`) |
 | `BRAIN_TOKENS_FILE` | `~/.brain/tokens.json` | the bearer-token store, read by the public listener and by `npm run token` |
+
+## Deploy
+
+Muse Brain also runs as a container, so it can serve every agent on a team instead of just the machine it's installed on. It is still one process, now with two listeners:
+
+- **Loopback listener**: `BRAIN_PORT` (default 4747) on `127.0.0.1`, always on. It is exactly what runs on your machine: every route (the graph page, `/api/call`, `/api/install`, `/api/recall`, `/api/pre`), Host/Origin validation, `?agent=` identity. Public mode does not touch it, so local agents, hooks, the graph page and the installer keep working unchanged.
+- **Public listener**: only when `BRAIN_PUBLIC_PORT` is set (empty or unset means off; it must differ from `BRAIN_PORT`, and an invalid value stops the server at startup). It binds `BRAIN_HOST` (default `0.0.0.0`) and serves only `/mcp`, `POST /api/v1/<verb>` and `GET /api/v1/openapi.json`. Everything else answers `404` there before any processing, whatever the headers. Identity is `Authorization: Bearer <token>` only (a missing or invalid token gets `401` with `WWW-Authenticate: Bearer`), and `?agent=` is ignored.
+
+The image sets `BRAIN_PORT=4748` and `BRAIN_PUBLIC_PORT=4747`: the public listener takes the one exposed port, and the loopback listener stays inside the container. The public listener speaks plain HTTP on that port, so TLS has to come from the platform or a proxy in front.
+
+### Fly.io
+
+```bash
+fly launch --ha=false
+```
+
+Run from a clone of this repo. `fly launch` picks up the repo's `Dockerfile` and `fly.toml` automatically -- the `brain_data` volume, the `BRAIN_DB`/`BRAIN_LOG_DIR`/`BRAIN_PORT`/`BRAIN_PUBLIC_PORT`/`BRAIN_TOKENS_FILE` env vars, the HTTP service on port 4747 with forced HTTPS, and an HTTP health check on `GET /api/v1/openapi.json` are all already in `fly.toml`. Answer the prompts (or `fly deploy` on subsequent pushes) and the DB, the logs, the tokens file and the daily backups persist across deploys on the mounted volume.
+
+Two things to do by hand. `app = "muse-brain"` in `fly.toml` must become a name nobody else has (or let `fly launch` rename it). And keep exactly one machine: a Fly volume pins the app to one machine in one region, and a second machine would get its own empty volume, so its own empty database and its own tokens (`fly launch --ha=false` above, `fly scale count 1` if a second one ever appears).
+
+Mint a token for each agent (see [Tokens](#tokens)):
+
+```bash
+fly ssh console -C "sh -c 'cd /app && npm run token -- mint grok-bot'"
+```
+
+### DigitalOcean
+
+Create a Droplet from the **Docker on Ubuntu** Marketplace image with a Volume attached, mount the volume at `/mnt/brain_data`, and paste [`.do-marketplace/cloud-init.yaml`](.do-marketplace/cloud-init.yaml) into the Droplet's **User Data** field at creation time -- it starts the container with the volume and env vars wired up. Or skip User Data and SSH in once the Droplet is up to run the same `docker run` line by hand. The cloud-init refuses to start the container if nothing is mounted at `/mnt/brain_data`, so the data can never silently land on the Droplet's root disk.
+
+This is a Droplet, not the "Deploy to DO" App Platform button, because App Platform's disk is ephemeral and would wipe the database on every redeploy.
+
+Nothing in the cloud-init terminates TLS, so it publishes the container on the Droplet's loopback only (`-p 127.0.0.1:4747:4747`): nothing is reachable from the internet, and no token crosses it in cleartext, until you put a TLS proxy on the Droplet in front of `127.0.0.1:4747`. With Caddy, which fetches certificates itself (the name needs a DNS record pointing at the Droplet, and ports 80 and 443 open in its firewall):
+
+```bash
+caddy reverse-proxy --from brain.example.com --to 127.0.0.1:4747
+```
+
+Agents then use `https://brain.example.com/mcp`. Any proxy works, nginx included: the public listener never consults forwarded headers or `Host`. If you would rather publish the port directly, change the cloud-init to `-p 4747:4747`; tokens then travel in cleartext until TLS is added, so restrict who can reach the port with a DigitalOcean Cloud Firewall. The cloud-init also pulls `ghcr.io/yahavf6/muse-brain:latest`, which no CI job publishes yet: build and push the image yourself, or point the `docker run` line at a locally built tag.
+
+Mint a token for each agent (see [Tokens](#tokens)):
+
+```bash
+docker exec muse-brain npm run token -- mint grok-bot
+```
+
+### From your Mac
+
+No hosting needed: the local service can open a public listener too. Add these to `~/.brain/.env` (the server loads that file at startup; see [Env file](#env-file)):
+
+```
+BRAIN_PUBLIC_PORT=4748
+BRAIN_HOST=127.0.0.1    # optional, recommended for a tunnel: only the tunnel can reach the listener
+```
+
+Then `bash scripts/service.sh restart`, mint a token with `npm run token -- mint <agent>`, and point a tunnel at the public listener:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:4748
+```
+
+Give agents the HTTPS URL it prints plus `/mcp`. Local agents keep using `127.0.0.1:4747` with no token. `cloudflared` is not shipped or tested here, and the tunnel only works while the Mac is awake and `cloudflared` is running. Without `BRAIN_HOST=127.0.0.1` the listener binds `0.0.0.0` and is reachable from your network as well, over plain HTTP.
+
+### Tokens
+
+```bash
+npm run token -- mint <agent> [--read-only]   # prints the token once, plus its hash
+npm run token -- list                         # hash, agent, created_at; never the raw token
+npm run token -- revoke <hash>                # the hash from `list`
+```
+
+This is the only way to manage tokens. Run it inside the container, as above; the CLI needs no running server, and it reads `~/.brain/.env` the same way the server does. It must see the server's `BRAIN_TOKENS_FILE` (`/data/tokens.json`, set by the `Dockerfile` and again by `fly.toml` and the cloud-init; `~/.brain/tokens.json` when unset): `docker exec` inherits it, and on Fly, if a freshly minted token is refused, check that the session sees it (`fly ssh console -C env`), because a CLI that writes a different file mints tokens the server never reads. The server re-reads the file on every request, so a mint or revoke takes effect with no restart.
+
+- One token per agent. The agent name you mint with becomes the `agent` on everything that token writes (not the `approved_by` of an approval, which is whatever the caller sends), and access policy is keyed by that name.
+- The token is shown once. The file holds only its sha256, so a lost token cannot be recovered, only revoked and replaced. It is written atomically and always ends up mode `0600`; a malformed file is never rewritten (`mint` and `revoke` fail, and the server treats every token as invalid until you fix or move it aside).
+- `--read-only` also upserts an `agent_policy` row for that agent (read on, write off, every project), so it can call `ask`, `search`, `context` and `get` but not `log`, `link`, `update` or `approve_rule`. Without it the token has `full` scope, which includes `approve_rule`. The CLI offers only these two levels; per-token scopes and expiry are on the Roadmap.
+- Policy belongs to the agent name, not the token: minting a second token for the same name shares its policy, and `--read-only` overwrites any project scoping that name had, back to all projects.
+
+### See your deployed graph
+
+The graph page is served only on the loopback listener, which the container never exposes (through the public URL it is a `404`), so copy a snapshot of the database down and open it with a local server. The server writes its own consistent snapshot to `<dir of BRAIN_DB>/backups/brain-YYYY-MM-DD.db`, which is `/data/backups/` on the volume: once at startup and then every 6 hours, but at most one file per UTC day (the first run of the day wins), so the newest snapshot can be a day old or a little more. Copy that, not the live `brain.db` and `brain.db-wal`, which you could catch as an inconsistent pair:
+
+```bash
+# Fly (list the snapshots, then fetch one)
+fly ssh console -C "ls /data/backups"
+fly ssh sftp get /data/backups/brain-2026-09-23.db copy.db
+# Droplet, on the Droplet, then copy copy.db to your machine
+docker cp muse-brain:/data/backups/brain-2026-09-23.db copy.db
+# then, next to the downloaded file
+BRAIN_DB=./copy.db BRAIN_PORT=4748 npm start
+```
+
+Open `http://127.0.0.1:4748` (`BRAIN_PORT` keeps it clear of a local service already on 4747; if your `~/.brain/.env` sets `BRAIN_PUBLIC_PORT=4748` for the Mac option, add `BRAIN_PUBLIC_PORT=` to the command to switch that listener off for this run). The local server writes to the copy, not to the deployed brain, and it puts its own `backups/` folder next to the copy.
+
+A deployed brain is its own graph, separate from the one on your machine, and nothing syncs them. Local hooks and agents keep reading the local `~/.brain/brain.db`. The backups live on the volume, so they survive the container being recreated, but they are the same disk as the database: snapshot the volume itself (or copy the backups off) if you need a copy that survives losing it.
 
 ## Rules and guards
 
